@@ -8,3 +8,4 @@ humanize>=4.7.0
 pytz>=2023.3
 colorlog>=6.7.0
 asyncio>=3.4.3
+flask
