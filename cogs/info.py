@@ -10,6 +10,9 @@ class Info(commands.Cog):
 
     @app_commands.command(name="serverinfo", description="Get information about the server")
     async def serverinfo(self, interaction):
+        # Defer the response immediately to prevent timeout
+        await interaction.response.defer()
+
         guild = interaction.guild
 
         # Get counts
@@ -60,11 +63,15 @@ class Info(commands.Cog):
 
         embed.set_footer(text=f"Requested by {interaction.user}")
 
-        await interaction.response.send_message(embed=embed)
+        # Use followup instead of response since we deferred
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="userinfo", description="Get information about a user")
     @app_commands.describe(user="The user to get information about (defaults to yourself)")
     async def userinfo(self, interaction, user: discord.Member = None):
+        # Defer the response immediately to prevent timeout
+        await interaction.response.defer()
+
         # Default to the command user if no user is specified
         target = user or interaction.user
 
@@ -141,7 +148,8 @@ class Info(commands.Cog):
 
         embed.set_footer(text=f"Requested by {interaction.user}")
 
-        await interaction.response.send_message(embed=embed)
+        # Use followup instead of response since we deferred
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="avatar", description="Get a user's avatar")
     @app_commands.describe(user="The user to get the avatar of (defaults to yourself)")

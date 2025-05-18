@@ -1,0 +1,12 @@
+{
+    "ticket_categories": [
+        "General Support",
+        "Technical Issue",
+        "Billing Question",
+        "Other"
+    ],
+    "admin_roles": [],
+    "welcome_channel": null,
+    "goodbye_channel": null,
+    "auto_roles": []
+}
