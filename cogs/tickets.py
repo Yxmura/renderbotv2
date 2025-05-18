@@ -52,12 +52,13 @@ class TicketCategorySelect(discord.ui.Select):
         # Load default categories if none provided
         if not categories:
             config = load_data('config')
-            categories = config.get("ticket_categories", [
+            categories = [
                 {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
-                {"name": "Technical Issue", "emoji": "🔧", "description": "Report a technical problem"},
-                {"name": "Billing Question", "emoji": "💰", "description": "Ask about billing or payments"},
-                {"name": "Other", "emoji": "📝", "description": "Other inquiries"}
-            ])
+                {"name": "Resource Issue", "emoji": "⚠️", "description": "Report a problem with a resource"},
+                {"name": "Partner- or sponsorship", "emoji": "💰", "description": "Partner or sponsorship inqueries"},
+                {"name": "Staff Application - if open", "emoji": "🔒", "description": "Request for staff application, if open"},
+                {"name": "Other", "emoji": "📝", "description": "Other inquiries (e.g. bug reports)"}
+            ]
 
         # Create options from categories
         options = []
