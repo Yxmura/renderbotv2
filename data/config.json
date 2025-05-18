@@ -1,12 +1,13 @@
 {
     "ticket_categories": [
         "General Support",
-        "Technical Issue",
-        "Billing Question",
+        "Resource Issue",
+        "Partner- or sponsorship",
+        "Staff Application - if open",
         "Other"
     ],
-    "admin_roles": [],
-    "welcome_channel": null,
-    "goodbye_channel": null,
+    "admin_roles": [1317607057687576696],
+    "welcome_channel": 1367574829208699020,
+    "goodbye_channel": 1367574829208699020,
     "auto_roles": []
 }
