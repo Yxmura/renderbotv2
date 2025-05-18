@@ -101,8 +101,8 @@ class TicketBot(commands.Bot):
 
         # Setup activity
         await self.change_presence(activity=discord.Activity(
-            type=discord.ActivityType.listening,
-            name="your tickets | !help"
+            type=discord.ActivityType.playing,
+            name="with my balls | /help"
         ))
 
 

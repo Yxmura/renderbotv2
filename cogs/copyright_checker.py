@@ -564,10 +564,16 @@ class CopyrightChecker(commands.Cog):
         else:
             await interaction.followup.send('Please provide a valid YouTube link!')
 
+    from discord import app_commands
+
     @app_commands.command(name='extract', description="Extract audio from a YouTube video")
-    @app_commands.describe(url="YouTube video URL to extract audio from")
-    async def extract(self, interaction: discord.Interaction, url: str):
+    @app_commands.describe(
+        url="YouTube video URL to extract audio from",
+        quality="Audio quality: low (64kbps), medium (192kbps), or high (320kbps)"
+    )
+    async def extract(self, interaction: discord.Interaction, url: str, quality: str = 'medium'):
         """Extract audio from a YouTube video"""
+
         if not url:
             await interaction.response.send_message("Please provide a YouTube link.")
             return
@@ -578,39 +584,80 @@ class CopyrightChecker(commands.Cog):
         await interaction.response.defer(thinking=True)
         output_filename = "downloaded_audio.mp3"
 
+        quality_map = {
+            "low": "64",
+            "medium": "192",
+            "high": "320"
+        }
+        preferred_quality = quality_map.get(quality.lower(), "192")
+
         try:
-            await interaction.followup.send("Downloading audio... This may take a moment.")
+            await interaction.followup.send(f"Downloading audio at **{quality}** quality... This may take a moment.")
             ydl_opts = {
                 'format': 'bestaudio',
                 'outtmpl': 'downloaded_audio.%(ext)s',
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
-                    'preferredquality': '192'
+                    'preferredquality': preferred_quality
                 }]
             }
             with YoutubeDL(ydl_opts) as ydl:
                 await asyncio.to_thread(ydl.extract_info, url, download=True)
 
-            # Check if file exists and is not too large
             if os.path.exists(output_filename):
-                file_size = os.path.getsize(output_filename) / (1024 * 1024)  # Size in MB
+                file_size = os.path.getsize(output_filename) / (1024 * 1024)  # MB
                 if file_size > 8:
                     await interaction.followup.send(
                         f"⚠️ The audio file is too large ({file_size:.1f} MB). Discord has an 8MB file size limit.")
                     os.remove(output_filename)
                     return
 
-                await interaction.followup.send("Audio extracted successfully!", file=discord.File(output_filename))
+                await interaction.followup.send("✅ Audio extracted successfully!", file=discord.File(output_filename))
                 os.remove(output_filename)
             else:
-                await interaction.followup.send("Failed to extract audio. The file was not created.")
+                await interaction.followup.send("❌ Failed to extract audio. The file was not created.")
         except Exception as e:
-            await interaction.followup.send(f"An error occurred while extracting audio: {str(e)}")
+            await interaction.followup.send(f"❌ An error occurred while extracting audio: {str(e)}")
             logger.error(f"Error in extract: {str(e)}")
-            # Clean up if file exists
             if os.path.exists(output_filename):
                 os.remove(output_filename)
+
+    @app_commands.command(name='download', description="Download a YouTube video in 720p (medium quality)")
+    @app_commands.describe(url="YouTube video URL to download")
+    async def download_video(self, interaction: discord.Interaction, url: str):
+        await interaction.response.defer(thinking=True)
+        try:
+            self.video_ydl_opts = {
+                'format': 'bestvideo[height=720]+bestaudio/best[height=720]/best[height=720]',
+                'outtmpl': 'data/%(title)s.%(ext)s',
+                'merge_output_format': 'mp4',
+                'quiet': True,
+                'no_warnings': True,
+                'cookies': 'cookies.txt' if os.path.exists('cookies.txt') else None,
+                'postprocessors': [{
+                    'key': 'FFmpegVideoConvertor',
+                    'preferredformat': 'mp4'
+                }]
+            }
+
+            os.makedirs('downloads', exist_ok=True)
+
+            with YoutubeDL(self.ydl_opts) as ydl:
+                info_dict = await asyncio.to_thread(ydl.extract_info, url, download=True)
+                file_path = ydl.prepare_filename(info_dict).replace('.webm', '.mp4')  # handle container fallback
+                if not os.path.exists(file_path):
+                    raise Exception("Failed to download video.")
+
+            file = discord.File(file_path, filename=os.path.basename(file_path))
+            await interaction.followup.send(content=f"🎬 Downloaded: **{info_dict.get('title', 'Video')}**", file=file)
+
+            # Optionally delete the file after sending
+            os.remove(file_path)
+
+        except Exception as e:
+            logger.error(f"Error downloading video: {e}")
+            await interaction.followup.send(f"❌ Failed to download video. Error: {str(e)}")
 
     @app_commands.command(name='copyright_help', description="Show help for copyright checker commands")
     async def copyright_help(self, interaction: discord.Interaction):
