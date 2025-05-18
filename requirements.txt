@@ -8,5 +8,8 @@ humanize>=4.7.0
 pytz>=2023.3
 colorlog>=6.7.0
 asyncio>=3.4.3
-flask
-yt-dlp
+flask~=3.1.0
+yt-dlp~=2024.12.13
+spotipy~=2.25.0
+discord~=2.3.2
+google-api-python-client~=2.169.0
