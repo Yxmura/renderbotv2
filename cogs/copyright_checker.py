@@ -385,7 +385,7 @@ class CopyrightChecker(commands.Cog):
                 "subscribers": statistics.get("subscriberCount", "N/A"),
                 "views": statistics.get("viewCount", "N/A"),
                 "videos": statistics.get("videoCount", "N/A"),
-                "watch_hours": round(int(statistics.get("viewCount", 0)) / 1000, 2),  # rough estimate
+                "watch_hours": round(int(statistics.get("viewCount", 0)) / 1000, 2)*12,
                 "created_at": snippet["publishedAt"],
                 "profile_pic": snippet["thumbnails"]["high"]["url"],
                 "banner_url": branding["image"].get("bannerExternalUrl", None) if "image" in branding else None,
@@ -500,10 +500,12 @@ class CopyrightChecker(commands.Cog):
                     top_video = self.get_top_video(channel_id)
 
                     if stats:
+                        desc = stats['description'][:200] + "..." if len(stats['description']) > 200 else stats['description']
                         stats_embed = discord.Embed(
                             title=f"{stats['title']} - YouTube Channel Stats",
-                            description=stats['description'][:200] + "..." if len(stats['description']) > 200 else
-                            stats['description'],
+
+                            description=f'```{desc}```'
+                            ,
                             color=discord.Color.red()
                         )
                         stats_embed.set_thumbnail(url=stats["profile_pic"])

@@ -11,6 +11,27 @@ class Fun(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    @app_commands.command(name="kiss", description="Kiss another user")
+    @app_commands.describe(user="The user to kiss")
+    async def kiss(self, interaction, user: discord.Member):
+        if user == interaction.user:
+            await interaction.response.send_message("You can't kiss yourself!", ephemeral=True)
+            return
+        elif user.bot:
+            await interaction.response.send_message("You can't kiss a bot!", ephemeral=True)
+        else:
+            async with aiohttp.ClientSession() as session:
+                async with session.get('https://api.otakugifs.xyz/gif?reaction=airkiss') as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        embed = discord.Embed(
+                            title=f"{interaction.user.display_name} kissed {user.display_name}!",
+                            color=discord.Color.pink()
+                        )
+                        embed.set_image(url=data['url'])
+                        await interaction.response.send_message(content = f"{interaction.user.mention} {user.mention}", embed=embed)
+
+
     @app_commands.command(name="meme", description="Get a random meme")
     async def meme(self, interaction):
         async with aiohttp.ClientSession() as session:
@@ -23,7 +44,6 @@ class Fun(commands.Cog):
                         color=discord.Color.random()
                     )
                     embed.set_image(url=data['url'])
-                    embed.set_footer(text=f"👍 {data['ups']} | Subreddit: r/{data['subreddit']}")
                     await interaction.response.send_message(embed=embed)
                 else:
                     await interaction.response.send_message("Failed to fetch a meme. Try again later.", ephemeral=True)
