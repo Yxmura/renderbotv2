@@ -144,7 +144,7 @@ class TicketCategorySelect(discord.ui.Select):
         # Create the channel
         try:
             channel = await guild.create_text_channel(
-                f"ticket-{ticket_number}",
+                name=f"{interaction.user.name.lower()}-{category.lower().replace(' ', '-')}",
                 overwrites=overwrites,
                 category=category_channel,
                 reason=f"Ticket created by {interaction.user}"

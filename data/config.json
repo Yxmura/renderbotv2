@@ -10,5 +10,6 @@
     "welcome_channel": 1367574829208699020,
     "goodbye_channel": 1367574829208699020,
     "auto_roles": [],
-    "ticket_category_id" : 1361033906597531811
+    "ticket_category_id" : 1361033906597531811,
+    "ticket_log_channel": 1361035162611220521
 }
