@@ -21,6 +21,18 @@ class Fun(commands.Cog):
             await interaction.response.send_message("You can't kiss a bot!", ephemeral=True)
         else:
             async with aiohttp.ClientSession() as session:
+                if random.randint(1,5) == 1:
+                    async with session.get('https://api.otakugifs.xyz/gif?reaction=kiss') as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            embed = discord.Embed(
+                                title=f"{interaction.user.display_name} kissed {user.display_name} 💘!",
+                                color=discord.Color.pink()
+                            )
+                            embed.set_image(url=data['url'])
+                            await interaction.response.send_message(
+                                content=f"{interaction.user.mention} {user.mention}", embed=embed)
+
                 async with session.get('https://api.otakugifs.xyz/gif?reaction=airkiss') as response:
                     if response.status == 200:
                         data = await response.json()
