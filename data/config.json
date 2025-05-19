@@ -9,5 +9,6 @@
     "admin_roles": [1317607057687576696],
     "welcome_channel": 1367574829208699020,
     "goodbye_channel": 1367574829208699020,
-    "auto_roles": []
+    "auto_roles": [],
+    "ticket_category_id" : 1361033906597531811
 }
