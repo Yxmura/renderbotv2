@@ -13,3 +13,4 @@ yt-dlp~=2024.12.13
 spotipy~=2.25.0
 discord~=2.3.2
 google-api-python-client~=2.169.0
+psutil
