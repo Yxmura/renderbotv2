@@ -150,7 +150,7 @@ class Admin(commands.Cog):
         channel="The channel to send the announcement to",
         title="The title of the announcement",
         message="The announcement message",
-        ping_everyone="Whether to ping @everyone (default: False)"
+        ping_everyone="Whether to ping @updates (default: False)"
     )
     async def announce(
             self,
@@ -177,7 +177,7 @@ class Admin(commands.Cog):
                          icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
 
         # Send announcement
-        content = "@everyone" if ping_everyone else None
+        content = "<@&1330576797267660841>" if ping_everyone else None
         await channel.send(content=content, embed=embed)
 
         await interaction.response.send_message(f"Announcement sent to {channel.mention}!", ephemeral=True)
