@@ -30,7 +30,7 @@ def load_data(file):
         elif file == 'config':
             default_data = {
                 "admin_roles": [],
-                "ticket_categories": [
+                "ticket_categories": config.get("ticket_categories", [
                     {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
                     {"name": "Technical Issue", "emoji": "🔧", "description": "Report a technical problem"},
                     {"name": "Billing Question", "emoji": "💰", "description": "Ask about billing or payments"},
@@ -187,7 +187,7 @@ class TicketCategorySelect(discord.ui.Select):
 
         # Create ticket management buttons
         ticket_controls = TicketControlsView(ticket_number)
-        await channel.send(embed=embed, view=ticket_controls)
+        await channel.send(embed=embed, view=ticket_controls, content="<@&1317607057687576696>")
 
         # Log ticket creation to log channel
         await self.log_ticket_creation(interaction, ticket_number, category, channel)
