@@ -30,7 +30,7 @@ def load_data(file):
         elif file == 'config':
             default_data = {
                 "admin_roles": [],
-                "ticket_categories": config.get("ticket_categories", [
+                "ticket_categories": config.get("ticket_categories"), [
                     {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
                     {"name": "Technical Issue", "emoji": "🔧", "description": "Report a technical problem"},
                     {"name": "Billing Question", "emoji": "💰", "description": "Ask about billing or payments"},
