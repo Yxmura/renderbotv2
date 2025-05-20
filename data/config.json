@@ -1,11 +1,11 @@
 {
     "ticket_categories": [
-        "General Support",
-        "Resource Issue",
-        "Partner- or sponsorship",
-        "Staff Application - if open",
-        "Other"
-    ],
+                {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
+                {"name": "Resource Issue", "emoji": "⚠️", "description": "Report a problem with a resource"},
+                {"name": "Partner- or sponsorship", "emoji": "💰", "description": "Partner or sponsorship inqueries"},
+                {"name": "Staff Application - if open", "emoji": "🔒", "description": "Request for staff application, if open"},
+                {"name": "Other", "emoji": "📝", "description": "Other inquiries (e.g. bug reports)"}
+            ],
     "admin_roles": [1317607057687576696],
     "welcome_channel": 1367574829208699020,
     "goodbye_channel": 1367574829208699020,

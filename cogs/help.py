@@ -124,7 +124,7 @@ class Help(commands.Cog):
     async def help(self, interaction: discord.Interaction):
         default_category = list(CATEGORIES.keys())[0]
         view = HelpMenu(default_category)
-        await interaction.response.send_message(embed=view.get_embed(), view=view, ephemeral=True)
+        await interaction.response.send_message(embed=view.get_embed(), view=view, ephemeral=False)
 
     @commands.Cog.listener()
     async def on_ready(self):
