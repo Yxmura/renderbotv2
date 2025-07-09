@@ -46,7 +46,8 @@ class TicketBot(commands.Bot):
             'cogs.reminders',
             'cogs.giveaways',
             'cogs.copyright_checker',
-            'cogs.help'
+            'cogs.help',
+            'cogs.rules'
         ]
 
     async def setup_hook(self):

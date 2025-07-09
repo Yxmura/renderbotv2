@@ -38,12 +38,62 @@ class Welcome(commands.Cog):
             if channel:
                 embed = discord.Embed(
                     title=f"Welcome to {member.guild.name}!",
-                    description=f"Hey {member.mention}, welcome to the server! We're now at **{member.guild.member_count}** members!",
+                    description=f"Welcome to the server! We're now at **{member.guild.member_count}** members!",
                     color=discord.Color.green()
                 )
                 embed.set_thumbnail(url=member.display_avatar.url)
                 embed.set_footer(text=f"Joined at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                await channel.send(embed=embed)
+                await channel.send(f"Hey {member.mention}!", embed=embed)
+
+    @commands.Cog.listener()
+    async def on_member_boost(self, member, boost_type):
+        """Send a thank you message when someone boosts the server"""
+        config = load_data('config')
+        if not config.get('boost_channel_id'):
+            return
+            
+        channel = self.bot.get_channel(int(config['boost_channel_id']))
+        if not channel:
+            return
+            
+        # Create a beautiful embed
+        embed = discord.Embed(
+            title="✨ Server Boosted! ✨",
+            description=(
+                f"Thank you {member.mention} for boosting **{member.guild.name}**!\n\n"
+                "Your support helps us keep the community running and growing. "
+                "As a token of our appreciation, you've received the **Booster** role! 🎉"
+            ),
+            color=0xFF73FA  # Blurple color for boost
+        )
+        
+        # Add server icon if available
+        if member.guild.icon:
+            embed.set_thumbnail(url=member.guild.icon.url)
+            
+        # Add boost count and level info if available
+        if hasattr(member.guild, 'premium_subscription_count'):
+            boost_count = member.guild.premium_subscription_count
+            boost_level = member.guild.premium_tier
+            
+            level_str = {
+                0: "Level 0",
+                1: "Level 1 (5+ boosts)",
+                2: "Level 2 (15+ boosts)",
+                3: "Level 3 (30+ boosts)"
+            }.get(boost_level, f"Level {boost_level}")
+            
+            embed.add_field(
+                name="Server Boost Status",
+                value=f"**Boosts:** {boost_count}\n**Boost Level:** {level_str}",
+                inline=False
+            )
+        
+        # Add footer with timestamp
+        embed.set_footer(text="Thank you for your support!")
+        
+        # Send the message with the user ping outside the embed
+        await channel.send(f"🎉 {member.mention} just boosted the server! 🎉", embed=embed)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member):
@@ -86,6 +136,8 @@ class Welcome(commands.Cog):
         save_data('config', config)
 
         await interaction.response.send_message(f"Goodbye channel set to {channel.mention}!", ephemeral=True)
+        
+
 
     @app_commands.command(name="welcome_test", description="Test the welcome message")
     async def welcome_test(self, interaction):

@@ -3,6 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 import json
 import asyncio
+import re
 from datetime import datetime, timedelta
 
 
@@ -237,6 +238,33 @@ class Polls(commands.Cog):
                 view = PollView(poll_id, poll["options"])
                 self.bot.add_view(view)
 
+    def parse_duration(self, duration_str: str) -> int:
+        """Parse duration string like '2h', '30min', '10s', '1d' into minutes"""
+        if not duration_str:
+            return None
+            
+        # Remove any whitespace and convert to lowercase
+        duration_str = duration_str.lower().replace(' ', '')
+        
+        # Define patterns for different time units
+        patterns = {
+            'd': 1440,  # days to minutes
+            'h': 60,    # hours to minutes
+            'm': 1,     # minutes
+            's': 1/60   # seconds to minutes
+        }
+        
+        # Try to match the pattern
+        match = re.match(r'^(\d+)([dhms])', duration_str)
+        if not match:
+            raise ValueError("Invalid duration format. Use formats like '2h', '30min', '10s', or '1d'")
+            
+        value = int(match.group(1))
+        unit = match.group(2)
+        
+        # Convert to minutes
+        return int(value * patterns[unit])
+
     @app_commands.command(name="poll", description="Create a poll")
     @app_commands.describe(
         question="The poll question",
@@ -245,7 +273,7 @@ class Polls(commands.Cog):
         option3="Third option (optional)",
         option4="Fourth option (optional)",
         option5="Fifth option (optional)",
-        duration="Poll duration in minutes (optional, default: no time limit)"
+        duration="Poll duration (e.g., '2h', '30min', '10s', '1d') (optional, default: no time limit)"
     )
     async def create_poll(
             self,
@@ -256,18 +284,22 @@ class Polls(commands.Cog):
             option3: str = None,
             option4: str = None,
             option5: str = None,
-            duration: int = None
+            duration: str = None
     ):
+        # Parse duration if provided
+        duration_minutes = None
+        if duration:
+            try:
+                duration_minutes = self.parse_duration(duration)
+            except ValueError as e:
+                await interaction.response.send_message(str(e), ephemeral=True)
+                return
+        
         # Collect options
         options = [option1, option2]
         if option3:
             options.append(option3)
         if option4:
-            options.append(option4)
-        if option5:
-            options.append(option5)
-
-            #
             options.append(option4)
         if option5:
             options.append(option5)
@@ -280,8 +312,8 @@ class Polls(commands.Cog):
 
         # Calculate end time if duration is provided
         end_time = None
-        if duration:
-            end_time = (datetime.now() + timedelta(minutes=duration)).isoformat()
+        if duration_minutes:
+            end_time = (datetime.now() + timedelta(minutes=duration_minutes)).isoformat()
 
         # Create poll view
         view = PollView(poll_id, options)
@@ -299,7 +331,20 @@ class Polls(commands.Cog):
 
         # Add end time if set
         if end_time:
-            embed.set_footer(text=f"Poll ends in: {duration} minutes")
+            # Format duration for display
+            days = duration_minutes // 1440
+            hours = (duration_minutes % 1440) // 60
+            minutes = duration_minutes % 60
+            
+            duration_str = []
+            if days > 0:
+                duration_str.append(f"{days}d")
+            if hours > 0:
+                duration_str.append(f"{hours}h")
+            if minutes > 0 or not duration_str:  # Show at least minutes if no other units
+                duration_str.append(f"{minutes}m")
+                
+            embed.set_footer(text=f"Poll ends in: {' '.join(duration_str)}")
 
         # Send poll message
         await interaction.response.send_message(embed=embed, view=view)

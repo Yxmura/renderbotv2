@@ -48,6 +48,32 @@ class GiveawayView(discord.ui.View):
         if not giveaway:
             await interaction.response.send_message("This giveaway no longer exists!", ephemeral=True)
             return
+            
+        # Check role requirements if any
+        if 'required_role' in giveaway and giveaway['required_role']:
+            required_role_id = int(giveaway['required_role'])
+            bypass_roles = [int(role_id) for role_id in giveaway.get('bypass_roles', [])]
+            
+            # Check if user has required role or any bypass role
+            user_roles = [role.id for role in interaction.user.roles]
+            has_required_role = required_role_id in user_roles
+            has_bypass_role = any(role_id in user_roles for role_id in bypass_roles)
+            
+            if not (has_required_role or has_bypass_role):
+                required_role = interaction.guild.get_role(required_role_id)
+                role_name = required_role.mention if required_role else f"Role ID: {required_role_id}"
+                
+                if bypass_roles:
+                    bypass_mentions = ", ".join([f"<@&{role_id}>" for role_id in bypass_roles])
+                    message = (
+                        f"❌ You need the {role_name} role to enter this giveaway!\n"
+                        f"*The following roles bypass this requirement: {bypass_mentions}*"
+                    )
+                else:
+                    message = f"❌ You need the {role_name} role to enter this giveaway!"
+                
+                await interaction.response.send_message(message, ephemeral=True)
+                return
 
         # Check if giveaway is still active
         if giveaway["status"] != "active":
@@ -213,7 +239,9 @@ class Giveaways(commands.Cog):
         prize="The prize for the giveaway",
         duration="Duration in minutes",
         winners="Number of winners (default: 1)",
-        channel="Channel to host the giveaway (default: current channel)"
+        channel="Channel to host the giveaway (default: current channel)",
+        required_role="Role required to enter (optional)",
+        bypass_roles="Roles that bypass the requirement (optional)"
     )
     async def create_giveaway(
             self,
@@ -221,7 +249,9 @@ class Giveaways(commands.Cog):
             prize: str,
             duration: int,
             winners: int = 1,
-            channel: discord.TextChannel = None
+            channel: discord.TextChannel = None,
+            required_role: discord.Role = None,
+            bypass_roles: str = None
     ):
         # Check permissions
         if not is_admin(interaction):
@@ -243,12 +273,31 @@ class Giveaways(commands.Cog):
         # Calculate end time
         end_time = datetime.now() + timedelta(minutes=duration)
 
+        # Parse bypass roles if provided
+        bypass_role_ids = []
+        if bypass_roles:
+            try:
+                bypass_role_ids = [int(role_id.strip()) for role_id in bypass_roles.split(',')]
+            except ValueError:
+                await interaction.response.send_message("Invalid format for bypass_roles. Use comma-separated role IDs.", ephemeral=True)
+                return
+
         # Create embed
         embed = discord.Embed(
             title=f"🎉 Giveaway: {prize}",
             description=f"React with the button below to enter!\nHosted by {interaction.user.mention}",
             color=discord.Color.blue()
         )
+        
+        # Add role requirement to description if specified
+        if required_role:
+            role_mention = f"<@&{required_role.id}>"
+            bypass_mentions = ", ".join([f"<@&{role_id}>" for role_id in bypass_role_ids]) if bypass_role_ids else "None"
+            embed.add_field(
+                name="🎭 Role Requirements",
+                value=f"• Required Role: {role_mention}\n• Bypass Roles: {bypass_mentions}",
+                inline=False
+            )
 
         embed.add_field(name="Entries", value="0 entries", inline=True)
         embed.add_field(name="Winners", value=str(winners), inline=True)
@@ -283,7 +332,9 @@ class Giveaways(commands.Cog):
             "winners": [],
             "start_time": datetime.now().isoformat(),
             "end_time": end_time.isoformat(),
-            "status": "active"
+            "status": "active",
+            "required_role": str(required_role.id) if required_role else None,
+            "bypass_roles": bypass_role_ids
         }
 
         save_data('giveaways', giveaways)

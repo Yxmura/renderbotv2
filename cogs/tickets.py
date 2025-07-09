@@ -9,6 +9,9 @@ import textwrap
 from datetime import datetime, timedelta
 import logging
 import os
+from typing import Dict, Optional, Any, List
+from dataclasses import dataclass, asdict, field
+import uuid
 
 
 # Set up logging
@@ -18,57 +21,111 @@ logger = logging.getLogger('bot.tickets')
 os.makedirs('data', exist_ok=True)
 
 
-# Load data
-def load_data(file):
+@dataclass
+class TicketMetadata:
+    """Class to handle ticket metadata serialization/deserialization."""
+    ticket_id: str
+    user_id: int
+    category: str
+    status: str = "open"
+    priority: str = "normal"
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    claimed_by: Optional[int] = None
+    last_activity: str = field(default_factory=lambda: datetime.now().isoformat())
+    closed_at: Optional[str] = None
+    closed_by: Optional[int] = None
+    close_reason: Optional[str] = None
+    close_type: Optional[str] = None
+    
+    @classmethod
+    def from_topic(cls, topic: Optional[str]) -> Optional['TicketMetadata']:
+        """Create TicketMetadata from channel topic."""
+        if not topic or not topic.startswith("TICKET_METADATA:"):
+            return None
+            
+        try:
+            json_str = topic.split("TICKET_METADATA:", 1)[1].strip()
+            data = json.loads(json_str)
+            return cls(**data)
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.error(f"Error parsing ticket metadata: {e}")
+            return None
+    
+    def to_topic(self) -> str:
+        """Convert metadata to channel topic string."""
+        data = asdict(self)
+        json_str = json.dumps(data, ensure_ascii=False)
+        return f"TICKET_METADATA:{json_str}"
+    
+    def update_activity(self):
+        """Update last activity timestamp."""
+        self.last_activity = datetime.now().isoformat()
+    
+    def close(self, closer_id: int, reason: str, close_type: str):
+        """Close the ticket."""
+        self.status = "closed"
+        self.closed_at = datetime.now().isoformat()
+        self.closed_by = closer_id
+        self.close_reason = reason
+        self.close_type = close_type
+        self.update_activity()
+
+# Load config (only config, not tickets)
+def load_config():
     try:
-        with open(f'data/{file}.json', 'r') as f:
+        with open('data/config.json', 'r') as f:
             return json.load(f)
     except FileNotFoundError:
-        # Create default data structure if file doesn't exist
-        if file == 'tickets':
-            default_data = {"counter": 0, "tickets": {}}
-        elif file == 'config':
-            default_data = {
-                "admin_roles": [],
-                "ticket_categories": config.get("ticket_categories", [
-                    {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
-                    {"name": "Technical Issue", "emoji": "🔧", "description": "Report a technical problem"},
-                    {"name": "Billing Question", "emoji": "💰", "description": "Ask about billing or payments"},
-                    {"name": "Other", "emoji": "📝", "description": "Other inquiries"}
-                ]),
-                "ticket_category_id": "",
-                "ticket_log_channel": "",
-                "ticket_auto_close_hours": 0
-            }
-        else:
-            default_data = {}
-
-        with open(f'data/{file}.json', 'w') as f:
-            json.dump(default_data, f, indent=4)
-
-        return default_data
+        default_config = {
+            "admin_roles": [],
+            "ticket_categories": [
+                {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
+                {"name": "Technical Issue", "emoji": "🔧", "description": "Report a technical problem"},
+                {"name": "Billing Question", "emoji": "💰", "description": "Ask about billing or payments"},
+                {"name": "Other", "emoji": "📝", "description": "Other inquiries"}
+            ],
+            "ticket_category_id": "",
+            "ticket_log_channel": "",
+            "ticket_auto_close_hours": 0
+        }
+        os.makedirs('data', exist_ok=True)
+        with open('data/config.json', 'w') as f:
+            json.dump(default_config, f, indent=4)
+        return default_config
 
 
 
-def save_data(file, data):
-    with open(f'data/{file}.json', 'w') as f:
-        json.dump(data, f, indent=4)
+def save_config(config):
+    """Save config to file."""
+    os.makedirs('data', exist_ok=True)
+    with open('data/config.json', 'w') as f:
+        json.dump(config, f, indent=4)
 
 
-# Check if user has admin role
-def is_admin(interaction):
-    config = load_data('config')
+async def is_admin(interaction: discord.Interaction) -> bool:
+    """Check if the user has admin permissions.
+    
+    Args:
+        interaction: The Discord interaction object
+        
+    Returns:
+        bool: True if user has admin permissions, False otherwise
+    """
+    # Check if user has administrator permission
+    if interaction.user.guild_permissions.administrator:
+        return True
+        
+    # Check if user has any admin roles
+    config = load_config()
     admin_roles = config.get("admin_roles", [])
-
-    if not admin_roles:  # If no admin roles set, default to administrator permission
-        return interaction.user.guild_permissions.administrator
-
-    for role_id in admin_roles:
-        role = interaction.guild.get_role(int(role_id))
-        if role and role in interaction.user.roles:
-            return True
-
-    return interaction.user.guild_permissions.administrator
+    
+    # If no admin roles are set, only server admins can use admin commands
+    if not admin_roles:
+        return False
+        
+    # Check if user has any of the admin roles
+    user_role_ids = [str(role.id) for role in interaction.user.roles]
+    return any(role_id in user_role_ids for role_id in admin_roles)
 
 
 # Ticket category select menu
@@ -111,93 +168,139 @@ class TicketCategorySelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         # Check if user already has an open ticket
-        tickets = load_data('tickets')
-        for ticket_id, ticket_data in tickets["tickets"].items():
-            if ticket_data["user_id"] == interaction.user.id and ticket_data["status"] == "open":
-                await interaction.response.send_message("You already have an open ticket!", ephemeral=True)
+        guild = interaction.guild
+        for channel in guild.channels:
+            if not isinstance(channel, discord.TextChannel):
+                continue
+                
+            # Check if channel is a ticket channel for this user
+            metadata = TicketMetadata.from_topic(channel.topic)
+            if (metadata and 
+                metadata.user_id == interaction.user.id and 
+                metadata.status == "open"):
+                await interaction.response.send_message(
+                    f"You already have an open ticket: {channel.mention}", 
+                    ephemeral=True
+                )
                 return
 
         # Create new ticket
         category = self.values[0]
-        tickets["counter"] += 1
-        ticket_number = tickets["counter"]
+        ticket_id = str(uuid.uuid4())[:8]  # Generate a short unique ID
 
         # Create ticket channel
-        guild = interaction.guild
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+            guild.me: discord.PermissionOverwrite(
+                read_messages=True, 
+                send_messages=True, 
+                manage_channels=True,
+                manage_roles=True
+            )
         }
 
         # Add admin roles to channel permissions
-        config = load_data('config')
+        config = load_config()
         for role_id in config.get("admin_roles", []):
             role = guild.get_role(int(role_id))
             if role:
-                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                overwrites[role] = discord.PermissionOverwrite(
+                    read_messages=True, 
+                    send_messages=True
+                )
 
         # Get ticket category if set
         category_channel = None
         if config.get("ticket_category_id"):
             category_channel = guild.get_channel(int(config["ticket_category_id"]))
 
-        # Create the channel
+        # Create ticket metadata
+        metadata = TicketMetadata(
+            ticket_id=ticket_id,
+            user_id=interaction.user.id,
+            category=category
+        )
+
+        # Create the channel with metadata in topic
         try:
             channel = await guild.create_text_channel(
-                name=f"{interaction.user.name.lower()}-{category.lower().replace(' ', '-')}",
+                name=f"ticket-{ticket_id}",
                 overwrites=overwrites,
                 category=category_channel,
+                topic=metadata.to_topic(),
                 reason=f"Ticket created by {interaction.user}"
             )
         except discord.Forbidden:
-            await interaction.response.send_message("I don't have permission to create channels!", ephemeral=True)
+            await interaction.response.send_message(
+                "I don't have permission to create channels!", 
+                ephemeral=True
+            )
             return
         except discord.HTTPException as e:
-            await interaction.response.send_message(f"Failed to create ticket channel: {str(e)}", ephemeral=True)
+            await interaction.response.send_message(
+                f"Failed to create ticket channel: {str(e)}", 
+                ephemeral=True
+            )
             return
 
-        # Save ticket data
-        tickets["tickets"][str(ticket_number)] = {
-            "id": ticket_number,
-            "channel_id": channel.id,
-            "user_id": interaction.user.id,
-            "category": category,
-            "status": "open",
-            "priority": "normal",
-            "created_at": datetime.now().isoformat(),
-            "claimed_by": None,
-            "last_activity": datetime.now().isoformat(),
-            "messages": []
-        }
-        save_data('tickets', tickets)
-
         # Send confirmation to user
-        await interaction.response.send_message(f"Ticket created! Please check {channel.mention}", ephemeral=True)
+        await interaction.response.send_message(
+            f"Ticket created! Please check {channel.mention}", 
+            ephemeral=True
+        )
 
         # Send initial message in ticket channel
         embed = discord.Embed(
-            title=f"Ticket #{ticket_number} - {category}",
-            description=f"Thank you for creating a ticket, {interaction.user.mention}!\nAn admin will be with you shortly.",
+            title=f"Ticket #{ticket_id} - {category}",
+            description=(
+                f"Thank you for creating a ticket, {interaction.user.mention}!\n"
+                "An admin will be with you shortly.\n\n"
+                "**Please describe your issue in detail.**"
+            ),
             color=discord.Color.blue()
         )
         embed.add_field(name="Category", value=category, inline=True)
-        embed.add_field(name="Created", value=f"<t:{int(datetime.now().timestamp())}:R>", inline=True)
+        embed.add_field(name="Created", 
+                       value=f"<t:{int(datetime.now().timestamp())}:R>", 
+                       inline=True)
         embed.add_field(name="Priority", value="Normal", inline=True)
-        embed.set_footer(text=f"User ID: {interaction.user.id}")
+        embed.set_footer(text=f"Ticket ID: {ticket_id} • User ID: {interaction.user.id}")
 
         # Create ticket management buttons
-        ticket_controls = TicketControlsView(ticket_number)
-        await channel.send(embed=embed, view=ticket_controls, content="<@&1317607057687576696>")
+        ticket_controls = TicketControlsView(ticket_id)
+        
+        # Mention support role if configured
+        mention = ""
+        if config.get("support_role_id"):
+            mention = f"<@&{config['support_role_id']}>"
+        
+        await channel.send(embed=embed, view=ticket_controls, content=mention)
 
-        # Log ticket creation to log channel
-        await self.log_ticket_creation(interaction, ticket_number, category, channel)
+        # Log ticket creation to log channel if configured
+        log_channel_id = config.get("ticket_log_channel")
+        if log_channel_id:
+            log_channel = guild.get_channel(int(log_channel_id))
+            if log_channel:
+                log_embed = discord.Embed(
+                    title=f"Ticket #{ticket_id} Created",
+                    color=discord.Color.green()
+                )
+                log_embed.add_field(name="User", 
+                                  value=f"{interaction.user.mention} ({interaction.user.id})", 
+                                  inline=True)
+                log_embed.add_field(name="Category", value=category, inline=True)
+                log_embed.add_field(name="Channel", value=channel.mention, inline=True)
+                log_embed.timestamp = datetime.now()
+                await log_channel.send(embed=log_embed)
 
         # Log ticket creation
         logger.info(
-            f"Ticket #{ticket_number} created by {interaction.user} (ID: {interaction.user.id}) in category {category}")
+            f"Ticket #{ticket_id} created by {interaction.user} "
+            f"(ID: {interaction.user.id}) in category {category}"
+        )
 
-    async def log_ticket_creation(self, interaction, ticket_number, category, channel):
+    async def log_ticket_creation(self, interaction, ticket_id, category, channel):
         """Log ticket creation to the configured log channel"""
         config = load_data('config')
         if not config.get("ticket_log_channel"):
@@ -225,240 +328,415 @@ class TicketCategorySelect(discord.ui.Select):
 
 
 class TicketControlsView(discord.ui.View):
-    def __init__(self, ticket_id):
+    """View for ticket control buttons."""
+    
+    def __init__(self, ticket_id: str):
         super().__init__(timeout=None)
         self.ticket_id = ticket_id
-
-    @discord.ui.button(label="Claim Ticket", style=discord.ButtonStyle.primary, custom_id=f"claim_ticket", emoji="🙋‍♂️")
-    async def claim_ticket(self, interaction, button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("You don't have permission to claim tickets!", ephemeral=True)
+    
+    async def get_ticket_metadata(self, channel: discord.TextChannel) -> Optional[TicketMetadata]:
+        """Get ticket metadata from channel topic."""
+        metadata = TicketMetadata.from_topic(channel.topic)
+        if not metadata or metadata.ticket_id != self.ticket_id:
+            return None
+        return metadata
+    
+    async def update_ticket_metadata(self, channel: discord.TextChannel, metadata: TicketMetadata) -> None:
+        """Update ticket metadata in channel topic."""
+        try:
+            await channel.edit(topic=metadata.to_topic())
+        except discord.HTTPException as e:
+            logger.error(f"Failed to update ticket metadata: {e}")
+    
+    @discord.ui.button(label="Claim Ticket", style=discord.ButtonStyle.primary, custom_id="claim_ticket", emoji="🙋‍♂️")
+    async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Claim the ticket for handling."""
+        # Check permissions
+        if not await is_admin(interaction):
+            await interaction.response.send_message(
+                "You don't have permission to claim tickets!", 
+                ephemeral=True
+            )
             return
-
-        tickets = load_data('tickets')
-        ticket_data = tickets["tickets"].get(str(self.ticket_id))
-
-        if not ticket_data:
-            await interaction.response.send_message("This ticket no longer exists!", ephemeral=True)
+        
+        # Get ticket metadata
+        metadata = await self.get_ticket_metadata(interaction.channel)
+        if not metadata:
+            await interaction.response.send_message(
+                "This ticket no longer exists or is invalid!", 
+                ephemeral=True
+            )
             return
-
-        if ticket_data["claimed_by"]:
-            await interaction.response.send_message("This ticket has already been claimed!", ephemeral=True)
+            
+        # Check if already claimed
+        if metadata.claimed_by:
+            claimer = interaction.guild.get_member(metadata.claimed_by)
+            claimer_name = claimer.mention if claimer else f"User ID: {metadata.claimed_by}"
+            await interaction.response.send_message(
+                f"This ticket has already been claimed by {claimer_name}!", 
+                ephemeral=True
+            )
             return
-
-        # Update ticket data
-        ticket_data["claimed_by"] = interaction.user.id
-        ticket_data["last_activity"] = datetime.now().isoformat()
-        save_data('tickets', tickets)
-
-        # Update message
-        embed = discord.Embed(
-            title=f"Ticket #{self.ticket_id} - {ticket_data['category']}",
-            description=f"This ticket has been claimed by {interaction.user.mention}",
-            color=discord.Color.green()
+            
+        # Update metadata
+        metadata.claimed_by = interaction.user.id
+        metadata.update_activity()
+        await self.update_ticket_metadata(interaction.channel, metadata)
+        
+        # Update the embed
+        embed = interaction.message.embeds[0] if interaction.message.embeds else None
+        if embed:
+            # Update claimed status in embed
+            if len(embed.fields) >= 3:  # If we have 3 fields (Category, Created, Priority)
+                embed.set_field_at(2, name="Status", value=f"Claimed by {interaction.user.mention}", inline=True)
+            
+            # Update color to indicate claimed
+            embed.color = discord.Color.green()
+            
+            # Disable the claim button
+            for item in self.children:
+                if item.custom_id == "claim_ticket":
+                    item.disabled = True
+                    break
+            
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await interaction.response.defer()
+        
+        # Send notification
+        await interaction.followup.send(
+            f"{interaction.user.mention} has claimed this ticket!",
+            allowed_mentions=discord.AllowedMentions(users=[interaction.user])
         )
-        embed.add_field(name="Category", value=ticket_data['category'], inline=True)
-        embed.add_field(name="Created",
-                        value=f"<t:{int(datetime.fromisoformat(ticket_data['created_at']).timestamp())}:R>",
-                        inline=True)
-        embed.add_field(name="Priority", value=ticket_data.get('priority', 'Normal').capitalize(), inline=True)
-        embed.set_footer(text=f"User ID: {ticket_data['user_id']}")
-
-        # Disable claim button
-        button.disabled = True
-        await interaction.response.edit_message(embed=embed, view=self)
-
-        # Notify in channel
-        await interaction.followup.send(f"{interaction.user.mention} has claimed this ticket!")
-
-        # Log ticket claim
+        
         logger.info(f"Ticket #{self.ticket_id} claimed by {interaction.user} (ID: {interaction.user.id})")
-
-    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, custom_id=f"close_ticket", emoji="🔒")
-    async def close_ticket(self, interaction, button):
-        tickets = load_data('tickets')
-        ticket_data = tickets["tickets"].get(str(self.ticket_id))
-
-        if not ticket_data:
-            await interaction.response.send_message("This ticket no longer exists!", ephemeral=True)
+    
+    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, custom_id="close_ticket", emoji="🔒")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Initiate ticket closure."""
+        # Get ticket metadata
+        metadata = await self.get_ticket_metadata(interaction.channel)
+        if not metadata:
+            await interaction.response.send_message(
+                "This ticket no longer exists or is invalid!", 
+                ephemeral=True
+            )
             return
-
+            
         # Check permissions (ticket creator or admin)
-        if interaction.user.id != ticket_data["user_id"] and not is_admin(interaction):
-            await interaction.response.send_message("You don't have permission to close this ticket!", ephemeral=True)
+        is_creator = interaction.user.id == metadata.user_id
+        is_admin_user = await is_admin(interaction)
+        
+        if not (is_creator or is_admin_user):
+            await interaction.response.send_message(
+                "Only the ticket creator or an admin can close this ticket!",
+                ephemeral=True
+            )
             return
-
-        # Show modal for reason
+            
+        # Show close reason modal
         await interaction.response.send_modal(CloseTicketModal(self.ticket_id))
-
-    @discord.ui.button(label="Set Priority", style=discord.ButtonStyle.secondary, custom_id=f"priority_ticket",
-                       emoji="🔖")
-    async def set_priority(self, interaction, button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("You don't have permission to set ticket priority!", ephemeral=True)
+    
+    @discord.ui.button(label="Set Priority", style=discord.ButtonStyle.secondary, custom_id="set_priority", emoji="🔖")
+    async def set_priority(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Set ticket priority."""
+        # Check admin permissions
+        if not await is_admin(interaction):
+            await interaction.response.send_message(
+                "You don't have permission to set ticket priority!",
+                ephemeral=True
+            )
             return
-
-        tickets = load_data('tickets')
-        ticket_data = tickets["tickets"].get(str(self.ticket_id))
-
-        if not ticket_data:
-            await interaction.response.send_message("This ticket no longer exists!", ephemeral=True)
+            
+        # Get ticket metadata
+        metadata = await self.get_ticket_metadata(interaction.channel)
+        if not metadata:
+            await interaction.response.send_message(
+                "This ticket no longer exists or is invalid!",
+                ephemeral=True
+            )
             return
-
+            
         # Show priority selection
         await interaction.response.send_message(
             "Select a priority level for this ticket:",
             view=TicketPriorityView(self.ticket_id),
             ephemeral=True
         )
-
-    @discord.ui.button(label="Transcript", style=discord.ButtonStyle.secondary, custom_id=f"transcript_ticket",
-                       emoji="📝")
-    async def create_transcript(self, interaction, button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("You don't have permission to create transcripts!", ephemeral=True)
+    
+    @discord.ui.button(label="Transcript", style=discord.ButtonStyle.secondary, custom_id="transcript", emoji="📝")
+    async def create_transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Generate a transcript of the ticket."""
+        # Check admin permissions
+        if not await is_admin(interaction):
+            await interaction.response.send_message(
+                "You don't have permission to create transcripts!",
+                ephemeral=True
+            )
             return
-
+            
         await interaction.response.defer(ephemeral=True)
-
-        tickets = load_data('tickets')
-        ticket_data = tickets["tickets"].get(str(self.ticket_id))
-
-        if not ticket_data:
-            await interaction.followup.send("This ticket no longer exists!", ephemeral=True)
+        
+        # Get ticket metadata
+        metadata = await self.get_ticket_metadata(interaction.channel)
+        if not metadata:
+            await interaction.followup.send(
+                "This ticket no longer exists or is invalid!",
+                ephemeral=True
+            )
             return
-
+            
         # Generate transcript
-        transcript = await self.generate_transcript(interaction.channel, ticket_data)
-
-        # Create file
-        transcript_file = discord.File(
-            io.BytesIO(transcript.encode('utf-8')),
-            filename=f"ticket-{self.ticket_id}-transcript.txt"
-        )
-
-        # Send transcript
-        await interaction.followup.send(
-            "Here's the transcript for this ticket:",
-            file=transcript_file,
-            ephemeral=True
-        )
-
-    async def generate_transcript(self, channel, ticket_data):
-        # Fetch messages
+        try:
+            transcript = await self.generate_transcript(interaction.channel, metadata)
+            
+            # Create file
+            transcript_file = discord.File(
+                io.BytesIO(transcript.encode('utf-8')),
+                filename=f"ticket-{self.ticket_id}-transcript.txt"
+            )
+            
+            # Send transcript
+            await interaction.followup.send(
+                "Here's the transcript for this ticket:",
+                file=transcript_file,
+                ephemeral=True
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to generate transcript: {e}")
+            await interaction.followup.send(
+                "Failed to generate transcript. Please try again later.",
+                ephemeral=True
+            )
+    
+    async def generate_transcript(self, channel: discord.TextChannel, metadata: TicketMetadata) -> str:
+        """Generate a text transcript of the ticket."""
+        # Fetch messages (newest first, then we'll reverse)
         messages = []
-        async for message in channel.history(limit=500, oldest_first=True):
+        async for message in channel.history(limit=1000, oldest_first=True):
             if not message.author.bot or (message.author.bot and message.embeds):
                 messages.append(message)
-
-        # Format transcript
-        transcript = f"Transcript for Ticket #{self.ticket_id}\n"
-        transcript += f"Category: {ticket_data['category']}\n"
-        transcript += f"Created: {ticket_data['created_at']}\n"
-        transcript += f"Creator: {channel.guild.get_member(ticket_data['user_id'])}\n"
-        if ticket_data.get('claimed_by'):
-            claimer = channel.guild.get_member(ticket_data['claimed_by'])
-            transcript += f"Claimed by: {claimer}\n" if claimer else f"Claimed by: Unknown (ID: {ticket_data['claimed_by']})\n"
-        transcript += f"Status: {ticket_data['status']}\n"
-        transcript += f"Priority: {ticket_data.get('priority', 'normal')}\n\n"
+        
+        # Format transcript header
+        transcript = f"Ticket Transcript - #{metadata.ticket_id}\n"
         transcript += "=" * 50 + "\n\n"
-
+        
+        # Add ticket metadata
+        transcript += f"Ticket ID: {metadata.ticket_id}\n"
+        transcript += f"Category: {metadata.category}\n"
+        creator = channel.guild.get_member(metadata.user_id)
+        transcript += f"Creator: {creator} (ID: {metadata.user_id}) \n"
+        
+        if metadata.claimed_by:
+            claimer = channel.guild.get_member(metadata.claimed_by)
+            claimer_info = f"{claimer} (ID: {metadata.claimed_by})" if claimer else f"User ID: {metadata.claimed_by}"
+            transcript += f"Claimed by: {claimer_info}\n"
+        
+        transcript += f"Status: {metadata.status.capitalize()}\n"
+        transcript += f"Priority: {metadata.priority.capitalize()}\n"
+        created_dt = datetime.fromisoformat(metadata.created_at)
+        transcript += f"Created: {created_dt.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        
+        if metadata.closed_at and metadata.closed_by:
+            closed_dt = datetime.fromisoformat(metadata.closed_at)
+            closer = channel.guild.get_member(metadata.closed_by)
+            closer_info = f"{closer} (ID: {metadata.closed_by})" if closer else f"User ID: {metadata.closed_by}"
+            transcript += f"Closed: {closed_dt.strftime('%Y-%m-%d %H:%M:%S')} by {closer_info}\n"
+            if metadata.close_reason:
+                transcript += f"Close Reason: {metadata.close_reason}\n"
+        transcript += "\n" + "=" * 50 + "\n\n"
+        
         # Add messages
         for message in messages:
+            # Skip system messages
+            if message.is_system():
+                continue
+                
+            # Format timestamp
             timestamp = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
-            author_name = message.author.display_name
-
-            transcript += f"[{timestamp}] {author_name}: "
-
-            # Handle embeds
+            
+            # Format author
+            if message.author.bot:
+                author = f"[BOT] {message.author.display_name}"
+            else:
+                author = f"{message.author.display_name} ({message.author.id})"
+            
+            # Add message header
+            transcript += f"[{timestamp}] {author}\n"
+            
+            # Add message content
+            if message.content:
+                transcript += f"{message.content}\n"
+            
+            # Add attachments
+            if message.attachments:
+                transcript += "Attachments:\n"
+                for attachment in message.attachments:
+                    transcript += f"- {attachment.filename} ({attachment.size} bytes)\n"
+            # Add embeds
             if message.embeds:
+                transcript += "Embeds:\n"
                 for embed in message.embeds:
                     if embed.title:
-                        transcript += f"\n[Embed] {embed.title}"
+                        transcript += f"Title: {embed.title}\n"
                     if embed.description:
-                        transcript += f"\n{embed.description}"
+                        transcript += f"Description: {embed.description}\n"
                     for field in embed.fields:
-                        transcript += f"\n{field.name}: {field.value}"
-
-            # Handle regular content
-            if message.content:
-                transcript += f"{message.content}"
-
-            # Handle attachments
-            if message.attachments:
-                transcript += f"\n[Attachments: {', '.join([a.filename for a in message.attachments])}]"
-
-            transcript += "\n\n"
-
+                        transcript += f"{field.name}: {field.value}\n"
+                    if embed.footer:
+                        transcript += f"Footer: {embed.footer.text}\n"
+            transcript += "\n" + ("-" * 50) + "\n\n"
+        
         return transcript
 
 
 class TicketPriorityView(discord.ui.View):
-    def __init__(self, ticket_id):
-        super().__init__(timeout=60)
+    """View for setting ticket priority."""
+    
+    def __init__(self, ticket_id: str):
+        super().__init__(timeout=60)  # 1 minute timeout
         self.ticket_id = ticket_id
-
-    @discord.ui.button(label="Low", style=discord.ButtonStyle.secondary, custom_id="priority_low")
-    async def priority_low(self, interaction, button):
-        await self.set_priority(interaction, "low", discord.Color.green())
-
-    @discord.ui.button(label="Normal", style=discord.ButtonStyle.primary, custom_id="priority_normal")
-    async def priority_normal(self, interaction, button):
-        await self.set_priority(interaction, "normal", discord.Color.blue())
-
-    @discord.ui.button(label="High", style=discord.ButtonStyle.danger, custom_id="priority_high")
-    async def priority_high(self, interaction, button):
-        await self.set_priority(interaction, "high", discord.Color.orange())
-
-    @discord.ui.button(label="Urgent", style=discord.ButtonStyle.danger, custom_id="priority_urgent")
-    async def priority_urgent(self, interaction, button):
-        await self.set_priority(interaction, "urgent", discord.Color.red())
-
-    async def set_priority(self, interaction, priority, color):
-        tickets = load_data('tickets')
-        ticket_data = tickets["tickets"].get(str(self.ticket_id))
-
-        if not ticket_data:
-            await interaction.response.send_message("This ticket no longer exists!", ephemeral=True)
-            return
-
-        # Update ticket data
-        ticket_data["priority"] = priority
-        ticket_data["last_activity"] = datetime.now().isoformat()
-        save_data('tickets', tickets)
-
-        # Update channel name to reflect priority
-        channel = interaction.channel
+    
+    async def get_ticket_metadata(self, channel: discord.TextChannel) -> Optional[TicketMetadata]:
+        """Get ticket metadata from channel topic."""
+        metadata = TicketMetadata.from_topic(channel.topic)
+        if not metadata or metadata.ticket_id != self.ticket_id:
+            return None
+        return metadata
+    
+    async def update_ticket_metadata(self, channel: discord.TextChannel, metadata: TicketMetadata) -> None:
+        """Update ticket metadata in channel topic."""
         try:
-            # Only update if the name doesn't already have a priority prefix
-            if not re.match(r'^\[(low|normal|high|urgent)\]', channel.name, re.IGNORECASE):
-                await channel.edit(name=f"[{priority.upper()}] {channel.name}")
-        except discord.Forbidden:
-            pass  # Ignore if we can't edit the channel
-
-        # Send confirmation
-        await interaction.response.send_message(f"Ticket priority set to **{priority.capitalize()}**", ephemeral=True)
-
-        # Send notification in channel
-        embed = discord.Embed(
-            title=f"Priority Updated",
-            description=f"This ticket's priority has been set to **{priority.capitalize()}**",
-            color=color
-        )
-        embed.set_footer(text=f"Updated by {interaction.user}")
-
-        await interaction.channel.send(embed=embed)
-
-        # Log priority change
-        logger.info(
-            f"Ticket #{self.ticket_id} priority set to {priority} by {interaction.user} (ID: {interaction.user.id})")
+            await channel.edit(topic=metadata.to_topic())
+        except discord.HTTPException as e:
+            logger.error(f"Failed to update ticket metadata: {e}")
+    
+    @discord.ui.button(label="Low", style=discord.ButtonStyle.secondary, custom_id="priority_low")
+    async def priority_low(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Set priority to low."""
+        await self.set_priority(interaction, "low", discord.Color.green())
+    
+    @discord.ui.button(label="Normal", style=discord.ButtonStyle.primary, custom_id="priority_normal")
+    async def priority_normal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Set priority to normal."""
+        await self.set_priority(interaction, "normal", discord.Color.blue())
+    
+    @discord.ui.button(label="High", style=discord.ButtonStyle.danger, custom_id="priority_high")
+    async def priority_high(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Set priority to high."""
+        await self.set_priority(interaction, "high", discord.Color.orange())
+    
+    @discord.ui.button(label="Urgent", style=discord.ButtonStyle.danger, custom_id="priority_urgent")
+    async def priority_urgent(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Set priority to urgent."""
+        await self.set_priority(interaction, "urgent", discord.Color.red())
+    
+    async def set_priority(self, interaction: discord.Interaction, priority: str, color: discord.Color):
+        """Update ticket priority and refresh the ticket message."""
+        # Get the ticket channel from the interaction's message reference
+        if not interaction.message or not interaction.message.reference:
+            await interaction.response.send_message(
+                "Could not determine the ticket channel. Please try again.",
+                ephemeral=True
+            )
+            return
+            
+        # Get the ticket channel
+        ticket_channel = interaction.channel
+        if not isinstance(ticket_channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "This command can only be used in a ticket channel.",
+                ephemeral=True
+            )
+            return
+        
+        # Get ticket metadata
+        metadata = await self.get_ticket_metadata(ticket_channel)
+        if not metadata:
+            await interaction.response.send_message(
+                "This ticket no longer exists or is invalid!",
+                ephemeral=True
+            )
+            return
+        
+        # Update priority in metadata
+        old_priority = metadata.priority
+        metadata.priority = priority
+        metadata.update_activity()
+        
+        # Save changes
+        await self.update_ticket_metadata(ticket_channel, metadata)
+        
+        # Find and update the main ticket message
+        ticket_message = None
+        try:
+            async for message in ticket_channel.history(limit=50):
+                if message.embeds and f"Ticket #{self.ticket_id}" in message.embeds[0].title:
+                    ticket_message = message
+                    break
+        except Exception as e:
+            logger.error(f"Error finding ticket message: {e}")
+        
+        if ticket_message and ticket_message.embeds:
+            try:
+                # Update the embed with new priority
+                embed = ticket_message.embeds[0]
+                
+                # Update priority field
+                for i, field in enumerate(embed.fields):
+                    if field.name.lower() == "priority":
+                        embed.set_field_at(i, name="Priority", value=priority.capitalize(), inline=True)
+                        break
+                
+                # Update color based on priority
+                embed.color = color
+                
+                # Update the message
+                view = TicketControlsView(self.ticket_id)
+                await ticket_message.edit(embed=embed, view=view)
+                
+                # Send confirmation
+                await interaction.response.edit_message(
+                    content=f"✅ Ticket priority changed from **{old_priority.capitalize()}** to **{priority.capitalize()}**",
+                    embed=None,
+                    view=None
+                )
+                
+                # Notify in the ticket channel
+                priority_colors = {
+                    "low": "🟢 Low",
+                    "normal": "🔵 Normal",
+                    "high": "🟠 High",
+                    "urgent": "🔴 Urgent"
+                }
+                
+                priority_emoji = priority_colors.get(priority, "")
+                await ticket_channel.send(
+                    f"{interaction.user.mention} set the ticket priority to {priority_emoji}"
+                )
+                
+            except Exception as e:
+                logger.error(f"Error updating ticket message: {e}")
+                await interaction.response.send_message(
+                    "✅ Priority updated, but there was an error updating the ticket message.",
+                    ephemeral=True
+                )
+        else:
+            await interaction.response.send_message(
+                f"✅ Priority set to **{priority.capitalize()}** (could not update ticket message)",
+                ephemeral=True
+            )
 
 
 class CloseTicketModal(discord.ui.Modal):
-    def __init__(self, ticket_id):
+    """Modal for entering a reason to close a ticket."""
+    
+    def __init__(self, ticket_id: str):
         super().__init__(title="Close Ticket")
         self.ticket_id = ticket_id
 
+        # Reason text input
         self.reason = discord.ui.TextInput(
             label="Reason for closing",
             placeholder="Please provide a reason for closing this ticket...",
@@ -468,309 +746,495 @@ class CloseTicketModal(discord.ui.Modal):
             style=discord.TextStyle.paragraph
         )
         self.add_item(self.reason)
+    
+    async def get_ticket_metadata(self, channel: discord.TextChannel) -> Optional[TicketMetadata]:
+        """Get ticket metadata from channel topic."""
+        metadata = TicketMetadata.from_topic(channel.topic)
+        if not metadata or metadata.ticket_id != self.ticket_id:
+            return None
+        return metadata
+    
+    async def update_ticket_metadata(self, channel: discord.TextChannel, metadata: TicketMetadata) -> None:
+        """Update ticket metadata in channel topic."""
+        try:
+            await channel.edit(topic=metadata.to_topic())
+            return True
+        except discord.HTTPException as e:
+            logger.error(f"Failed to update ticket metadata: {e}")
+            return False
 
-    async def on_submit(self, interaction):
-        tickets = load_data('tickets')
-        ticket_data = tickets["tickets"].get(str(self.ticket_id))
-
-        if not ticket_data:
-            await interaction.response.send_message("This ticket no longer exists!", ephemeral=True)
+    async def on_submit(self, interaction: discord.Interaction):
+        """Handle form submission."""
+        # Get the ticket channel
+        if not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "This command can only be used in a ticket channel.",
+                ephemeral=True
+            )
             return
-
-        # Get the ticket creator
-        user_id = ticket_data["user_id"]
-        user = interaction.guild.get_member(user_id)
-
-        # Check if admin or ticket creator
-        is_admin_user = is_admin(interaction)
-        is_ticket_creator = interaction.user.id == user_id
-
+            
+        # Get ticket metadata
+        metadata = await self.get_ticket_metadata(interaction.channel)
+        if not metadata:
+            await interaction.response.send_message(
+                "This ticket no longer exists or is invalid!", 
+                ephemeral=True
+            )
+            return
+            
+        # Check if user has permission to close (creator or admin)
+        is_creator = interaction.user.id == metadata.user_id
+        is_admin_user = await is_admin(interaction)
+        
+        if not (is_creator or is_admin_user):
+            await interaction.response.send_message(
+                "Only the ticket creator or an admin can close this ticket!",
+                ephemeral=True
+            )
+            return
+        
         # Send confirmation message with buttons
         embed = discord.Embed(
             title=f"Ticket #{self.ticket_id} Close Request",
-            description=f"This ticket has been requested to be closed by {interaction.user.mention}",
+            description=(
+                f"This ticket has been requested to be closed by {interaction.user.mention}\n\n"
+                f"**Reason:** {self.reason.value}"
+            ),
             color=discord.Color.orange()
         )
-        embed.add_field(name="Reason", value=self.reason.value, inline=False)
-        embed.set_footer(text=f"Requested at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # Add ticket info
+        creator = interaction.guild.get_member(metadata.user_id)
+        creator_info = f"{creator.mention} (ID: {metadata.user_id})" if creator else f"User ID: {metadata.user_id}"
+        
+        embed.add_field(name="Creator", value=creator_info, inline=True)
+        embed.add_field(name="Category", value=metadata.category, inline=True)
+        
+        if metadata.claimed_by:
+            claimer = interaction.guild.get_member(metadata.claimed_by)
+            claimer_info = f"{claimer.mention} (ID: {metadata.claimed_by})" if claimer else f"User ID: {metadata.claimed_by}"
+            embed.add_field(name="Claimed By", value=claimer_info, inline=True)
+        
+        created_dt = datetime.fromisoformat(metadata.created_at)
+        embed.add_field(
+            name="Created", 
+            value=f"<t:{int(created_dt.timestamp())}:R>", 
+            inline=True
+        )
+        
+        embed.set_footer(text=f"Ticket ID: {self.ticket_id} • Requested at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
         # Create confirmation view
         view = TicketCloseConfirmView(self.ticket_id, self.reason.value, interaction.user.id)
 
-        # Send the message and ping the user outside the embed
-        if user:
-            await interaction.response.send_message(f"{user.mention}", embed=embed, view=view)
-        else:
-            await interaction.response.send_message(embed=embed, view=view)
+        # Send the message and ping the creator
+        creator_mention = f"{creator.mention} " if creator else ""
+        await interaction.response.send_message(
+            content=f"{creator_mention}Please confirm closing this ticket:",
+            embed=embed, 
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=[creator] if creator else [])
+        )
 
         # Log the close request
         logger.info(
-            f"Ticket #{self.ticket_id} close requested by {interaction.user} (ID: {interaction.user.id}) with reason: {self.reason.value}")
+            f"Ticket #{self.ticket_id} close requested by {interaction.user} "
+            f"(ID: {interaction.user.id}) with reason: {self.reason.value}"
+        )
 
-    async def generate_transcript(self, channel, ticket_data):
-        # Fetch messages
+    async def generate_transcript(self, channel: discord.TextChannel, metadata: TicketMetadata) -> str:
+        """Generate a text transcript of the ticket."""
+        # Fetch messages (newest first, then we'll reverse)
         messages = []
-        async for message in channel.history(limit=500, oldest_first=True):
+        async for message in channel.history(limit=1000, oldest_first=True):
             if not message.author.bot or (message.author.bot and message.embeds):
                 messages.append(message)
-
-        # Format transcript
-        transcript = f"Transcript for Ticket #{self.ticket_id}\n"
-        transcript += f"Category: {ticket_data['category']}\n"
-        transcript += f"Created: {ticket_data['created_at']}\n"
-        transcript += f"Creator: {channel.guild.get_member(ticket_data['user_id'])}\n"
-        if ticket_data.get('claimed_by'):
-            claimer = channel.guild.get_member(ticket_data['claimed_by'])
-            transcript += f"Claimed by: {claimer}\n" if claimer else f"Claimed by: Unknown (ID: {ticket_data['claimed_by']})\n"
-        transcript += f"Status: {ticket_data['status']}\n"
-        transcript += f"Priority: {ticket_data.get('priority', 'normal')}\n\n"
+        
+        # Format transcript header
+        transcript = f"Ticket Transcript - #{metadata.ticket_id}\n"
         transcript += "=" * 50 + "\n\n"
-
+        
+        # Add ticket metadata
+        transcript += f"Ticket ID: {metadata.ticket_id}\n"
+        transcript += f"Category: {metadata.category}\n"
+        creator = channel.guild.get_member(metadata.user_id)
+        transcript += f"Creator: {creator} (ID: {metadata.user_id}) \n"
+        if metadata.claimed_by:
+            claimer = channel.guild.get_member(metadata.claimed_by)
+            claimer_info = f"{claimer} (ID: {metadata.claimed_by})" if claimer else f"User ID: {metadata.claimed_by}"
+            transcript += f"Claimed by: {claimer_info}\n"
+        
+        transcript += f"Status: {metadata.status.capitalize()}\n"
+        transcript += f"Priority: {metadata.priority.capitalize()}\n"
+        created_dt = datetime.fromisoformat(metadata.created_at)
+        transcript += f"Created: {created_dt.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        
+        if metadata.closed_at and metadata.closed_by:
+            closed_dt = datetime.fromisoformat(metadata.closed_at)
+            closer = channel.guild.get_member(metadata.closed_by)
+            closer_info = f"{closer} (ID: {metadata.closed_by})" if closer else f"User ID: {metadata.closed_by}"
+            transcript += f"Closed: {closed_dt.strftime('%Y-%m-%d %H:%M:%S')} by {closer_info}\n"
+            if metadata.close_reason:
+                transcript += f"Close Reason: {metadata.close_reason}\n"
+        
+        transcript += "\n" + "=" * 50 + "\n\n"
+        
         # Add messages
         for message in messages:
+            # Skip system messages
+            if message.is_system():
+                continue
+                
+            # Format timestamp
             timestamp = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
-            author_name = message.author.display_name
-
-            transcript += f"[{timestamp}] {author_name}: "
-
-            # Handle embeds
+            
+            # Format author
+            if message.author.bot:
+                author = f"[BOT] {message.author.display_name}"
+            else:
+                author = f"{message.author.display_name} ({message.author.id})"
+            
+            # Add message header
+            transcript += f"[{timestamp}] {author}\n"
+            
+            # Add message content
+            if message.content:
+                transcript += f"{message.content}\n"
+            
+            # Add attachments
+            if message.attachments:
+                transcript += "Attachments:\n"
+                for attachment in message.attachments:
+                    transcript += f"- {attachment.filename} ({attachment.size} bytes)\n"
+            # Add embeds
             if message.embeds:
+                transcript += "Embeds:\n"
                 for embed in message.embeds:
                     if embed.title:
-                        transcript += f"\n[Embed] {embed.title}"
+                        transcript += f"Title: {embed.title}\n"
                     if embed.description:
-                        transcript += f"\n{embed.description}"
+                        transcript += f"Description: {embed.description}\n"
                     for field in embed.fields:
-                        transcript += f"\n{field.name}: {field.value}"
-
-            # Handle regular content
-            if message.content:
-                transcript += f"{message.content}"
-
-            # Handle attachments
-            if message.attachments:
-                transcript += f"\n[Attachments: {', '.join([a.filename for a in message.attachments])}]"
-
-            transcript += "\n\n"
-
+                        transcript += f"{field.name}: {field.value}\n"
+                    if embed.footer:
+                        transcript += f"Footer: {embed.footer.text}\n"
+            transcript += "\n" + ("-" * 50) + "\n\n"
+        
         return transcript
 
 
 class TicketCloseConfirmView(discord.ui.View):
-    def __init__(self, ticket_id, reason, closer_id):
+    """View for confirming or denying ticket closure."""
+    
+    def __init__(self, ticket_id: str, reason: str, closer_id: int):
         super().__init__(timeout=3600)  # 1 hour timeout
         self.ticket_id = ticket_id
         self.reason = reason
         self.closer_id = closer_id
-
+    
+    async def get_ticket_metadata(self, channel: discord.TextChannel) -> Optional[TicketMetadata]:
+        """Get ticket metadata from channel topic."""
+        metadata = TicketMetadata.from_topic(channel.topic)
+        if not metadata or metadata.ticket_id != self.ticket_id:
+            return None
+        return metadata
+    
+    async def update_ticket_metadata(self, channel: discord.TextChannel, metadata: TicketMetadata) -> bool:
+        """Update ticket metadata in channel topic."""
+        try:
+            await channel.edit(topic=metadata.to_topic())
+            return True
+        except discord.HTTPException as e:
+            logger.error(f"Failed to update ticket metadata: {e}")
+            return False
+    
+    async def has_permission(self, interaction: discord.Interaction, metadata: TicketMetadata) -> bool:
+        """Check if the user has permission to close the ticket."""
+        # Admin can always close
+        if await is_admin(interaction):
+            return True
+            
+        # Ticket creator can close their own ticket
+        if interaction.user.id == metadata.user_id:
+            return True
+            
+        # The user who initiated the close request can confirm it
+        if interaction.user.id == self.closer_id:
+            return True
+            
+        return False
+    
     @discord.ui.button(label="Confirm Close", style=discord.ButtonStyle.green, custom_id="confirm_close")
-    async def confirm_close(self, interaction, button):
-        tickets = load_data('tickets')
-        ticket_data = tickets["tickets"].get(str(self.ticket_id))
-
-        if not ticket_data:
-            await interaction.response.send_message("This ticket no longer exists!", ephemeral=True)
+    async def confirm_close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Handle confirm close button click."""
+        await interaction.response.defer()
+        
+        # Get the ticket channel
+        if not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.followup.send(
+                "This command can only be used in a ticket channel.",
+                ephemeral=True
+            )
             return
-
-        # Check if user is the ticket creator
-        if interaction.user.id != ticket_data["user_id"] and not is_admin(interaction):
-            await interaction.response.send_message(
-                "Only the ticket creator or an admin can confirm closing the ticket!", ephemeral=True)
+            
+        # Get ticket metadata
+        metadata = await self.get_ticket_metadata(interaction.channel)
+        if not metadata:
+            await interaction.followup.send(
+                "This ticket no longer exists or is invalid!",
+                ephemeral=True
+            )
             return
-
-        await self.close_ticket(interaction, "confirmed by user")
-
+            
+        # Check permissions
+        if not await self.has_permission(interaction, metadata):
+            await interaction.followup.send(
+                "You don't have permission to close this ticket!",
+                ephemeral=True
+            )
+            return
+            
+        # Close the ticket
+        await self.close_ticket(interaction, metadata, "confirmed by user")
+    
     @discord.ui.button(label="Deny Close", style=discord.ButtonStyle.red, custom_id="deny_close")
-    async def deny_close(self, interaction, button):
-        tickets = load_data('tickets')
-        ticket_data = tickets["tickets"].get(str(self.ticket_id))
-
-        if not ticket_data:
-            await interaction.response.send_message("This ticket no longer exists!", ephemeral=True)
+    async def deny_close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Handle deny close button click."""
+        # Check permissions
+        if not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "This command can only be used in a ticket channel.",
+                ephemeral=True
+            )
             return
-
-        # Check if user is the ticket creator
-        if interaction.user.id != ticket_data["user_id"] and not is_admin(interaction):
-            await interaction.response.send_message("Only the ticket creator or an admin can deny closing the ticket!",
-                                                    ephemeral=True)
+            
+        # Get ticket metadata
+        metadata = await self.get_ticket_metadata(interaction.channel)
+        if not metadata:
+            await interaction.response.send_message(
+                "This ticket no longer exists or is invalid!",
+                ephemeral=True
+            )
             return
-
+            
+        # Check if user has permission to deny (same as closing)
+        if not await self.has_permission(interaction, metadata):
+            await interaction.response.send_message(
+                "You don't have permission to deny closing this ticket!",
+                ephemeral=True
+            )
+            return
+        
         # Update the message to show denial
         embed = discord.Embed(
             title=f"Ticket #{self.ticket_id} Close Request Denied",
-            description=f"The request to close this ticket has been denied by {interaction.user.mention}",
+            description=(
+                f"The request to close this ticket has been denied by {interaction.user.mention}.\n\n"
+                f"**Reason:** {self.reason}"
+            ),
             color=discord.Color.red()
         )
-
+        
         # Disable all buttons
         for child in self.children:
             child.disabled = True
-
+        
         await interaction.response.edit_message(embed=embed, view=self)
-
+        
         # Log the denial
-        logger.info(f"Ticket #{self.ticket_id} close request denied by {interaction.user} (ID: {interaction.user.id})")
-
+        logger.info(
+            f"Ticket #{self.ticket_id} close request denied by {interaction.user} "
+            f"(ID: {interaction.user.id})"
+        )
+    
     @discord.ui.button(label="Force Close", style=discord.ButtonStyle.danger, custom_id="force_close")
-    async def force_close(self, interaction, button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("Only admins can force close tickets!", ephemeral=True)
+    async def force_close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Handle force close button click (admin only)."""
+        # Check admin permissions
+        if not await is_admin(interaction):
+            await interaction.response.send_message(
+                "Only admins can force close tickets!",
+                ephemeral=True
+            )
             return
-
-        tickets = load_data('tickets')
-        ticket_data = tickets["tickets"].get(str(self.ticket_id))
-
-        if not ticket_data:
-            await interaction.response.send_message("This ticket no longer exists!", ephemeral=True)
-            return
-
-        await self.close_ticket(interaction, "force closed by admin")
-
-    async def close_ticket(self, interaction, close_type):
+            
         await interaction.response.defer()
-
-        tickets = load_data('tickets')
-        ticket_data = tickets["tickets"].get(str(self.ticket_id))
-
-        if not ticket_data:
-            await interaction.followup.send("This ticket no longer exists!")
+        
+        # Get the ticket channel
+        if not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.followup.send(
+                "This command can only be used in a ticket channel.",
+                ephemeral=True
+            )
             return
-
-        # Update ticket data
-        ticket_data["status"] = "closed"
-        ticket_data["closed_at"] = datetime.now().isoformat()
-        ticket_data["closed_by"] = interaction.user.id
-        ticket_data["close_reason"] = self.reason
-        ticket_data["close_type"] = close_type
-        save_data('tickets', tickets)
-
-        # Generate transcript before closing
-        transcript = await self.generate_transcript(interaction.channel, ticket_data)
-
+            
+        # Get ticket metadata
+        metadata = await self.get_ticket_metadata(interaction.channel)
+        if not metadata:
+            await interaction.followup.send(
+                "This ticket no longer exists or is invalid!",
+                ephemeral=True
+            )
+            return
+            
+        # Close the ticket with force close reason
+        await self.close_ticket(interaction, metadata, "force closed by admin")
+    
+    async def close_ticket(self, interaction: discord.Interaction, metadata: TicketMetadata, close_type: str):
+        """Close the ticket and perform cleanup."""
+        # Update metadata
+        metadata.status = "closed"
+        metadata.closed_at = datetime.now().isoformat()
+        metadata.closed_by = interaction.user.id
+        metadata.close_reason = self.reason
+        metadata.close_type = close_type
+        
+        # Save changes
+        success = await self.update_ticket_metadata(interaction.channel, metadata)
+        if not success:
+            await interaction.followup.send(
+                "Failed to update ticket status. Please try again.",
+                ephemeral=True
+            )
+            return
+        
+        # Generate transcript
+        transcript = await self.generate_transcript(interaction.channel, metadata)
+        
         # Create transcript file
         transcript_file = discord.File(
             io.BytesIO(transcript.encode('utf-8')),
             filename=f"ticket-{self.ticket_id}-transcript.txt"
         )
-
-        # Send confirmation
+        
+        # Create close embed
         embed = discord.Embed(
             title=f"Ticket #{self.ticket_id} Closed",
-            description=f"This ticket has been {close_type}",
+            description=(
+                f"This ticket has been {close_type}.\n\n"
+                f"**Reason:** {self.reason}"
+            ),
             color=discord.Color.red()
         )
-        embed.add_field(name="Reason", value=self.reason, inline=False)
-        embed.set_footer(text=f"Closed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
+        
+        # Add ticket info
+        creator = interaction.guild.get_member(metadata.user_id)
+        creator_info = f"{creator.mention} (ID: {metadata.user_id})" if creator else f"User ID: {metadata.user_id}"
+        
+        embed.add_field(name="Creator", value=creator_info, inline=True)
+        embed.add_field(name="Category", value=metadata.category, inline=True)
+        
+        if metadata.claimed_by:
+            claimer = interaction.guild.get_member(metadata.claimed_by)
+            claimer_info = f"{claimer.mention} (ID: {metadata.claimed_by})" if claimer else f"User ID: {metadata.claimed_by}"
+            embed.add_field(name="Claimed By", value=claimer_info, inline=True)
+        
+        created_dt = datetime.fromisoformat(metadata.created_at)
+        closed_dt = datetime.fromisoformat(metadata.closed_at)
+        
+        embed.add_field(
+            name="Duration", 
+            value=self.format_duration(created_dt, closed_dt),
+            inline=True
+        )
+        
+        closer = interaction.guild.get_member(interaction.user.id)
+        closer_info = f"{closer.mention} (ID: {interaction.user.id})" if closer else f"User ID: {interaction.user.id}"
+        
+        embed.add_field(
+            name="Closed By",
+            value=closer_info,
+            inline=True
+        )
+        
+        embed.set_footer(text=f"Ticket ID: {self.ticket_id} • Closed at {closed_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+        
         # Disable all buttons in the view
         for child in self.children:
             child.disabled = True
-
-        await interaction.edit_original_response(embed=embed, view=self)
-        await interaction.followup.send(file=transcript_file)
-
-        # Log transcript to log channel if configured
-        await self.log_ticket_closure(interaction, ticket_data, transcript)
-
-        # Schedule channel deletion
-        await interaction.followup.send("This channel will be deleted in 10 seconds...")
-        await asyncio.sleep(10)
-
-        channel = interaction.channel
+        
+        # Update the original message
         try:
-            await channel.delete(reason=f"Ticket #{self.ticket_id} closed")
-        except Exception as e:
-            await interaction.followup.send(f"Failed to delete channel: {e}. Please delete it manually.")
-
-        # Log ticket closure
-        logger.info(
-            f"Ticket #{self.ticket_id} closed by {interaction.user} (ID: {interaction.user.id}) with reason: {self.reason}")
-
-    async def log_ticket_closure(self, interaction, ticket_data, transcript):
-        """Log ticket closure to the configured log channel"""
-        config = load_data('config')
-        if not config.get("ticket_log_channel"):
-            return
-
-        try:
-            log_channel = interaction.guild.get_channel(int(config["ticket_log_channel"]))
-            if not log_channel:
-                return
-
-            # Create log embed
-            log_embed = discord.Embed(
-                title=f"Ticket #{self.ticket_id} Closed",
-                description=f"Ticket created by <@{ticket_data['user_id']}> has been closed",
-                color=discord.Color.red(),
-                timestamp=datetime.now()
+            await interaction.followup.edit_message(
+                message_id=interaction.message.id,
+                embed=embed,
+                view=self
             )
-            log_embed.add_field(name="Category", value=ticket_data["category"], inline=True)
-            log_embed.add_field(name="Closed by", value=f"<@{interaction.user.id}>", inline=True)
-            log_embed.add_field(name="Close type", value=ticket_data.get("close_type", "closed"), inline=True)
-            log_embed.add_field(name="Reason", value=self.reason, inline=False)
-
-            # Send log with transcript
-            await log_channel.send(
-                embed=log_embed,
-                file=discord.File(
-                    io.BytesIO(transcript.encode('utf-8')),
-                    filename=f"ticket-{self.ticket_id}-transcript.txt"
+        except Exception as e:
+            logger.error(f"Failed to update close confirmation message: {e}")
+        
+        # Send transcript to log channel if configured
+        config = load_config()
+        log_channel_id = config.get('log_channel')
+        
+        if log_channel_id:
+            try:
+                log_channel = interaction.guild.get_channel(int(log_channel_id))
+                if log_channel:
+                    log_embed = discord.Embed(
+                        title=f"Ticket #{self.ticket_id} Closed",
+                        description=(
+                            f"**Category:** {metadata.category}\n"
+                            f"**Creator:** {creator_info}\n"
+                            f"**Closed by:** {closer_info}\n"
+                            f"**Reason:** {self.reason}"
+                        ),
+                        color=discord.Color.red()
+                    )
+                    
+                    if metadata.claimed_by:
+                        log_embed.add_field(name="Claimed By", value=claimer_info, inline=False)
+                    
+                    log_embed.add_field(
+                        name="Duration",
+                        value=self.format_duration(created_dt, closed_dt),
+                        inline=False
+                    )
+                    
+                    log_embed.set_footer(text=f"Ticket ID: {self.ticket_id}")
+                    
+                    await log_channel.send(
+                        f"Ticket #{self.ticket_id} has been closed by {closer_info}",
+                        embed=log_embed,
+                        file=discord.File(
+                            io.BytesIO(transcript.encode('utf-8')),
+                            filename=f"ticket-{self.ticket_id}-transcript.txt"
+                        )
+                    )
+            except Exception as e:
+                logger.error(f"Failed to send transcript to log channel: {e}")
+        
+        # Send transcript to user who closed the ticket
+        try:
+            user = interaction.user
+            if not user.bot:
+                await user.send(
+                    f"Here's the transcript for ticket #{self.ticket_id} that you closed:",
+                    file=discord.File(
+                        io.BytesIO(transcript.encode('utf-8')),
+                        filename=f"ticket-{self.ticket_id}-transcript.txt"
+                    )
                 )
-            )
         except Exception as e:
-            logger.error(f"Failed to log ticket closure: {e}")
-
-    async def generate_transcript(self, channel, ticket_data):
-        # Fetch messages
-        messages = []
-        async for message in channel.history(limit=500, oldest_first=True):
-            if not message.author.bot or (message.author.bot and message.embeds):
-                messages.append(message)
-
-        # Format transcript
-        transcript = f"Transcript for Ticket #{self.ticket_id}\n"
-        transcript += f"Category: {ticket_data['category']}\n"
-        transcript += f"Created: {ticket_data['created_at']}\n"
-
-        creator = channel.guild.get_member(ticket_data['user_id'])
-        transcript += f"Creator: {creator}\n" if creator else f"Creator: Unknown (ID: {ticket_data['user_id']})\n"
-
-        if ticket_data.get('claimed_by'):
-            claimer = channel.guild.get_member(ticket_data['claimed_by'])
-            transcript += f"Claimed by: {claimer}\n" if claimer else f"Claimed by: Unknown (ID: {ticket_data['claimed_by']})\n"
-
-        transcript += f"Status: {ticket_data['status']}\n"
-        transcript += f"Priority: {ticket_data.get('priority', 'normal')}\n"
-        transcript += f"Close Reason: {self.reason}\n\n"
-        transcript += "=" * 50 + "\n\n"
-
-        # Add messages
-        for message in messages:
-            timestamp = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
-            author_name = message.author.display_name
-
-            transcript += f"[{timestamp}] {author_name}: "
-
-            # Handle embeds
-            if message.embeds:
-                for embed in message.embeds:
-                    if embed.title:
-                        transcript += f"\n[Embed] {embed.title}"
-                    if embed.description:
-                        transcript += f"\n{embed.description}"
-                    for field in embed.fields:
-                        transcript += f"\n{field.name}: {field.value}"
-
-            # Handle regular content
-            if message.content:
-                transcript += f"{message.content}"
-
-            # Handle attachments
-            if message.attachments:
-                transcript += f"\n[Attachments: {', '.join([a.filename for a in message.attachments])}]"
-
-            transcript += "\n\n"
-
+            logger.error(f"Failed to send transcript to user {interaction.user.id}: {e}")
+        
+        # Log the closure
+        logger.info(
+            f"Ticket #{self.ticket_id} closed by {interaction.user} "
+            f"(ID: {interaction.user.id}) with reason: {self.reason}"
+        )
+        
+        # Schedule channel deletion
+        try:
+            await asyncio.sleep(5)  # Give time for messages to be sent
+            await interaction.channel.delete(reason=f"Ticket #{self.ticket_id} closed by {interaction.user}")
+        except Exception as e:
+            logger.error(f"Failed to delete ticket channel: {e}")
+            await interaction.followup.send(
+                "Ticket closed, but I couldn't delete the channel. Please delete it manually.",
+                ephemeral=True
+            )
+        
         return transcript
 
 
