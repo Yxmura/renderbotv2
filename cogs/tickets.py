@@ -3,6 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 import json
 import asyncio
+from typing import Optional, Dict, Any
 import io
 import re
 import textwrap
@@ -12,6 +13,7 @@ import os
 from typing import Dict, Optional, Any, List
 from dataclasses import dataclass, asdict, field
 import uuid
+from bot import load_data, save_data
 
 
 # Set up logging
@@ -19,6 +21,296 @@ logger = logging.getLogger('bot.tickets')
 
 # Ensure data directory exists
 os.makedirs('data', exist_ok=True)
+
+
+# Base form modal for ticket creation
+class TicketFormModal(discord.ui.Modal):    
+    def __init__(self, category: str, *args, **kwargs):
+        super().__init__(title=f"{category} - Ticket Details", *args, **kwargs)
+        self.category = category
+        self.form_data = {}
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        # Store the form data
+        self.form_data = {}
+        for child in self.children:
+            if isinstance(child, discord.ui.TextInput):
+                if child.value:  # Only store non-empty values
+                    self.form_data[child.label] = child.value
+        
+        # Format the data into a nice embed
+        form_embed = self.format_embed(interaction)
+        
+        # Acknowledge the modal submission
+        await interaction.response.defer(ephemeral=True)
+        
+        # Create the ticket channel
+        ticket_view = TicketCategorySelect()  # Get an instance to access helper methods
+        result = await ticket_view.create_ticket_channel(interaction, self)
+        
+        if not result:
+            return  # Error already handled in create_ticket_channel
+            
+        channel, metadata = result
+        
+        # Send the ticket created message with form data
+        await ticket_view.send_ticket_created_message(
+            interaction,
+            channel,
+            self.ticket_id,
+            self.category,
+            form_embed=form_embed
+        )
+        
+        # Send confirmation to user
+        await interaction.followup.send(
+            f"Ticket created! Please check {channel.mention}", 
+            ephemeral=True
+        )
+    
+    def format_embed(self, interaction: discord.Interaction) -> discord.Embed:
+        """Format the form data into an embed for the ticket channel."""
+        embed = discord.Embed(
+            title=f"Ticket Details - {self.category}",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+        
+        # Add user info
+        embed.set_author(name=str(interaction.user), icon_url=interaction.user.display_avatar.url)
+        
+        # Add form fields
+        for field_name, value in self.form_data.items():
+            if value:  # Only add non-empty fields
+                embed.add_field(name=field_name, value=value[:1024], inline=False)
+        
+        return embed
+
+
+class ResourceIssueModal(TicketFormModal):
+    def __init__(self, *args, **kwargs):
+        super().__init__("Resource Issue", *args, **kwargs)
+        
+        self.resource_title = discord.ui.TextInput(
+            label="Resource Title (Optional)",
+            placeholder="Name of the resource with the issue",
+            required=False,
+            max_length=100
+        )
+        self.add_item(self.resource_title)
+        
+        self.issue_description = discord.ui.TextInput(
+            label="Issue Description",
+            placeholder="Please describe the issue in detail...",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=2000
+        )
+        self.add_item(self.issue_description)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        # Store the form data
+        self.form_data = {}
+        if self.resource_title.value:
+            self.form_data["Resource Title"] = self.resource_title.value
+        self.form_data["Issue Description"] = self.issue_description.value
+        
+        # Call parent's on_submit to handle the rest
+        await super().on_submit(interaction)
+
+
+class PartnerSponsorModal(TicketFormModal):
+    def __init__(self, *args, **kwargs):
+        super().__init__("Partner/Sponsor Inquiry", *args, **kwargs)
+        
+        self.organization = discord.ui.TextInput(
+            label="Organization/Channel Name",
+            placeholder="Your organization or channel name",
+            required=True,
+            max_length=100
+        )
+        self.add_item(self.organization)
+        
+        self.link = discord.ui.TextInput(
+            label="Discord/YouTube/Twitch Link",
+            placeholder="https://discord.gg/... or https://youtube.com/... or https://twitch.tv/...",
+            required=True,
+            max_length=200
+        )
+        self.add_item(self.link)
+        
+        self.details = discord.ui.TextInput(
+            label="Partnership/Sponsorship Details",
+            placeholder="Tell us about your proposal...",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=2000
+        )
+        self.add_item(self.details)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        # Store the form data
+        self.form_data = {
+            "Organization/Channel Name": self.organization.value,
+            "Link": f"[Click here]({self.link.value})" if self.link.value.startswith(('http://', 'https://')) else self.link.value,
+            "Details": self.details.value
+        }
+        
+        # Call parent's on_submit to handle the rest
+        await super().on_submit(interaction)
+
+
+class StaffApplicationModal(TicketFormModal):
+    def __init__(self, *args, **kwargs):
+        super().__init__("Staff Application", *args, **kwargs)
+        
+        self.name = discord.ui.TextInput(
+            label="Full Name",
+            placeholder="Your full name",
+            required=True,
+            max_length=100
+        )
+        self.add_item(self.name)
+        
+        self.age = discord.ui.TextInput(
+            label="Age",
+            placeholder="Your age",
+            required=True,
+            max_length=3
+        )
+        self.add_item(self.age)
+        
+        self.timezone = discord.ui.TextInput(
+            label="Timezone",
+            placeholder="Example: EST, PST, GMT+2, etc.",
+            required=True,
+            max_length=50
+        )
+        self.add_item(self.timezone)
+        
+        self.experience = discord.ui.TextInput(
+            label="Previous Experience",
+            placeholder="Any previous staff experience (Discord or other platforms)",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=1000
+        )
+        self.add_item(self.experience)
+        
+        self.why_join = discord.ui.TextInput(
+            label="Why do you want to join our staff team?",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=1000
+        )
+        self.add_item(self.why_join)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        # Store the form data
+        self.form_data = {
+            "Full Name": self.name.value,
+            "Age": self.age.value,
+            "Timezone": self.timezone.value,
+            "Previous Experience": self.experience.value,
+            "Why do you want to join our staff team?": self.why_join.value
+        }
+        
+        # Call parent's on_submit to handle the rest
+        await super().on_submit(interaction)
+
+
+class ContentCreatorModal(TicketFormModal):
+    def __init__(self, *args, **kwargs):
+        super().__init__("Content Creator Application", *args, **kwargs)
+        
+        self.channel_name = discord.ui.TextInput(
+            label="Channel Name",
+            placeholder="Your channel name",
+            required=True,
+            max_length=100
+        )
+        self.add_item(self.channel_name)
+        
+        self.channel_url = discord.ui.TextInput(
+            label="Channel URL",
+            placeholder="https://youtube.com/... or https://twitch.tv/...",
+            required=True,
+            max_length=200
+        )
+        self.add_item(self.channel_url)
+        
+        self.subscriber_count = discord.ui.TextInput(
+            label="Subscriber/Followers Count",
+            placeholder="Example: 10K",
+            required=True,
+            max_length=50
+        )
+        self.add_item(self.subscriber_count)
+        
+        self.last_video_views = discord.ui.TextInput(
+            label="Last Video View Count (Optional)",
+            placeholder="Example: 5K",
+            required=False,
+            max_length=50
+        )
+        self.add_item(self.last_video_views)
+        
+        self.collab_ideas = discord.ui.TextInput(
+            label="Collaboration Ideas",
+            placeholder="What kind of collaboration are you interested in?",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=1000
+        )
+        self.add_item(self.collab_ideas)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        # Store the form data
+        self.form_data = {
+            "Channel Name": self.channel_name.value,
+            "Channel URL": f"[Click here]({self.channel_url.value})" if self.channel_url.value.startswith(('http://', 'https://')) else self.channel_url.value,
+            "Subscriber/Followers Count": self.subscriber_count.value,
+            "Collaboration Ideas": self.collab_ideas.value
+        }
+        
+        # Add optional fields if provided
+        if self.last_video_views.value:
+            self.form_data["Last Video View Count"] = self.last_video_views.value
+            
+        # Call parent's on_submit to handle the rest
+        await super().on_submit(interaction)
+
+
+class OtherInquiryModal(TicketFormModal):
+    def __init__(self, *args, **kwargs):
+        super().__init__("Other Inquiry", *args, **kwargs)
+        
+        self.subject = discord.ui.TextInput(
+            label="Subject",
+            placeholder="Briefly describe what this is about",
+            required=True,
+            max_length=200
+        )
+        self.add_item(self.subject)
+        
+        self.details = discord.ui.TextInput(
+            label="Details",
+            placeholder="Please provide more details about your inquiry...",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=2000
+        )
+        self.add_item(self.details)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        # Store the form data
+        self.form_data = {
+            "Subject": self.subject.value,
+            "Details": self.details.value
+        }
+        
+        # Call parent's on_submit to handle the rest
+        await super().on_submit(interaction)
 
 
 @dataclass
@@ -116,7 +408,7 @@ async def is_admin(interaction: discord.Interaction) -> bool:
         return True
         
     # Check if user has any admin roles
-    config = load_config()
+    config = load_data('config')
     admin_roles = config.get("admin_roles", [])
     
     # If no admin roles are set, only server admins can use admin commands
@@ -139,14 +431,24 @@ class TicketCategorySelect(discord.ui.Select):
     def __init__(self, categories=None):
         # Load default categories if none provided
         if not categories:
-            config = load_data('config')
-            categories = [
-                {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
-                {"name": "Resource Issue", "emoji": "⚠️", "description": "Report a problem with a resource"},
-                {"name": "Partner- or sponsorship", "emoji": "💰", "description": "Partner or sponsorship inqueries"},
-                {"name": "Staff Application - if open", "emoji": "🔒", "description": "Request for staff application, if open"},
-                {"name": "Other", "emoji": "📝", "description": "Other inquiries (e.g. bug reports)"}
-            ]
+            try:
+                config = load_data('config')
+                categories = config.get('ticket_categories', [
+                    {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
+                    {"name": "Resource Issue", "emoji": "⚠️", "description": "Report a problem with a resource"},
+                    {"name": "Partner- or sponsorship", "emoji": "💰", "description": "Partner or sponsorship inqueries"},
+                    {"name": "Staff Application - if open", "emoji": "🔒", "description": "Request for staff application, if open"},
+                    {"name": "Other", "emoji": "📝", "description": "Other inquiries (e.g. bug reports)"}
+                ])
+            except Exception as e:
+                logger.error(f"Error loading config: {e}")
+                categories = [
+                    {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
+                    {"name": "Resource Issue", "emoji": "⚠️", "description": "Report a problem with a resource"},
+                    {"name": "Partner- or sponsorship", "emoji": "💰", "description": "Partner or sponsorship inqueries"},
+                    {"name": "Staff Application - if open", "emoji": "🔒", "description": "Request for staff application, if open"},
+                    {"name": "Other", "emoji": "📝", "description": "Other inquiries (e.g. bug reports)"}
+                ]
 
         # Create options from categories
         options = []
@@ -186,10 +488,28 @@ class TicketCategorySelect(discord.ui.Select):
 
         # Create new ticket
         category = self.values[0]
-        ticket_id = str(uuid.uuid4())[:8]  # Generate a short unique ID
-
-        # Create ticket channel
-        overwrites = {
+        self.ticket_id = str(uuid.uuid4())[:8]  # Generate a short unique ID
+        self.interaction = interaction
+        
+        # Show the appropriate modal based on the selected category
+        modal = None
+        if "Resource Issue" in category:
+            modal = ResourceIssueModal()
+        elif "Partner" in category or "Sponsor" in category:
+            modal = PartnerSponsorModal()
+        elif "Staff" in category or "Application" in category:
+            modal = StaffApplicationModal()
+        elif "Content" in category or "Creator" in category:
+            modal = ContentCreatorModal()
+        else:  # General Support, Other, or any other category
+            modal = OtherInquiryModal()
+        
+        # Store the ticket creation context on the modal
+        modal.ticket_id = self.ticket_id
+        modal.category = category
+        modal.guild = guild
+        modal.interaction = interaction
+        modal.overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
             guild.me: discord.PermissionOverwrite(
@@ -199,18 +519,28 @@ class TicketCategorySelect(discord.ui.Select):
                 manage_roles=True
             )
         }
-
+        
         # Add admin roles to channel permissions
         config = load_config()
         for role_id in config.get("admin_roles", []):
             role = guild.get_role(int(role_id))
             if role:
-                overwrites[role] = discord.PermissionOverwrite(
+                modal.overwrites[role] = discord.PermissionOverwrite(
                     read_messages=True, 
                     send_messages=True
                 )
+        
+        # Show the modal to the user
+        await interaction.response.send_modal(modal)
 
+    async def create_ticket_channel(self, interaction: discord.Interaction, modal: TicketFormModal):
+        """Helper method to create the ticket channel after form submission."""
+        guild = interaction.guild
+        ticket_id = modal.ticket_id
+        category = modal.category
+        
         # Get ticket category if set
+        config = load_config()
         category_channel = None
         if config.get("ticket_category_id"):
             category_channel = guild.get_channel(int(config["ticket_category_id"]))
@@ -226,40 +556,45 @@ class TicketCategorySelect(discord.ui.Select):
         try:
             channel = await guild.create_text_channel(
                 name=f"ticket-{ticket_id}",
-                overwrites=overwrites,
+                overwrites=modal.overwrites,
                 category=category_channel,
                 topic=metadata.to_topic(),
                 reason=f"Ticket created by {interaction.user}"
             )
         except discord.Forbidden:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "I don't have permission to create channels!", 
                 ephemeral=True
             )
-            return
+            return None
         except discord.HTTPException as e:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Failed to create ticket channel: {str(e)}", 
                 ephemeral=True
             )
-            return
-
-        # Send confirmation to user
-        await interaction.response.send_message(
-            f"Ticket created! Please check {channel.mention}", 
-            ephemeral=True
-        )
-
-        # Send initial message in ticket channel
+            return None
+            
+        return channel, metadata
+        
+    async def send_ticket_created_message(self, interaction: discord.Interaction, channel, ticket_id, category, form_embed=None):
+        """Send the initial ticket message with the form data."""
+        # Create the main ticket embed
         embed = discord.Embed(
             title=f"Ticket #{ticket_id} - {category}",
             description=(
                 f"Thank you for creating a ticket, {interaction.user.mention}!\n"
-                "An admin will be with you shortly.\n\n"
-                "**Please describe your issue in detail.**"
+                "An admin will be with you shortly.\n"
             ),
             color=discord.Color.blue()
         )
+        
+        # Add form data if provided
+        if form_embed:
+            embed.description += "\n**Your submission:**"
+            for field in form_embed.fields:
+                embed.add_field(name=field.name, value=field.value[:1024], inline=field.inline)
+        
+        # Add metadata fields
         embed.add_field(name="Category", value=category, inline=True)
         embed.add_field(name="Created", 
                        value=f"<t:{int(datetime.now().timestamp())}:R>", 
@@ -271,27 +606,29 @@ class TicketCategorySelect(discord.ui.Select):
         ticket_controls = TicketControlsView(ticket_id)
         
         # Mention support role if configured
+        config = load_config()
         mention = ""
         if config.get("support_role_id"):
             mention = f"<@&{config['support_role_id']}>"
         
+        # Send the message
         await channel.send(embed=embed, view=ticket_controls, content=mention)
-
+        
         # Log ticket creation to log channel if configured
         log_channel_id = config.get("ticket_log_channel")
         if log_channel_id:
-            log_channel = guild.get_channel(int(log_channel_id))
+            log_channel = interaction.guild.get_channel(int(log_channel_id))
             if log_channel:
                 log_embed = discord.Embed(
                     title=f"Ticket #{ticket_id} Created",
                     color=discord.Color.green()
                 )
                 log_embed.add_field(name="User", 
-                                  value=f"{interaction.user.mention} ({interaction.user.id})", 
-                                  inline=True)
+                                 value=f"{interaction.user.mention} ({interaction.user.id})", 
+                                 inline=True)
                 log_embed.add_field(name="Category", value=category, inline=True)
                 log_embed.add_field(name="Channel", value=channel.mention, inline=True)
-                log_embed.timestamp = datetime.now()
+                log_embed.timestamp = datetime.utcnow()
                 await log_channel.send(embed=log_embed)
 
         # Log ticket creation

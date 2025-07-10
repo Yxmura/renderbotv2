@@ -4,6 +4,7 @@
                 {"name": "Resource Issue", "emoji": "⚠️", "description": "Report a problem with a resource"},
                 {"name": "Partner- or sponsorship", "emoji": "💰", "description": "Partner or sponsorship inqueries"},
                 {"name": "Staff Application - if open", "emoji": "🔒", "description": "Request for staff application, if open"},
+                {"name": "Content Creator", "emoji": "📷", "description": "Request for content creator application"},
                 {"name": "Other", "emoji": "📝", "description": "Other inquiries (e.g. bug reports)"}
             ],
     "admin_roles": [1317607057687576696],

@@ -5,6 +5,7 @@ import json
 import asyncio
 import re
 from datetime import datetime, timedelta
+from bot import load_data
 
 
 # Load data
@@ -346,8 +347,17 @@ class Polls(commands.Cog):
                 
             embed.set_footer(text=f"Poll ends in: {' '.join(duration_str)}")
 
-        # Send poll message
-        await interaction.response.send_message(embed=embed, view=view)
+        # Get poll updates role from config
+        config = load_data('config')
+        poll_updates_role_id = config.get('polls_role', '')
+        
+        # Prepare the message content with role mention if configured
+        content = None
+        if poll_updates_role_id and poll_updates_role_id.isdigit():
+            content = f'<@&{poll_updates_role_id}> New poll created!'
+        
+        # Send poll message with role mention
+        await interaction.response.send_message(content=content, embed=embed, view=view)
         message = await interaction.original_response()
 
         # Save poll data
