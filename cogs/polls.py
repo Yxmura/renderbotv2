@@ -87,26 +87,69 @@ class PollView(discord.ui.View):
         # Count votes
         total_votes = sum(len(votes) for votes in poll["votes"].values())
 
-        # Create embed
+        # Create embed with gradient color based on time remaining
+        time_color = discord.Color.blue()
+        if "end_time" in poll:
+            end_time = datetime.fromisoformat(poll["end_time"])
+            time_left = (end_time - datetime.now()).total_seconds()
+            # Gradient from blue to red as time runs out
+            if time_left < 3600:  # < 1 hour
+                time_color = discord.Color.red()
+            elif time_left < 86400:  # < 1 day
+                time_color = discord.Color.orange()
+
         embed = discord.Embed(
-            title=poll["question"],
-            description=f"Total votes: {total_votes}",
-            color=discord.Color.blue()
+            title=f"📊 {poll['question']}",
+            color=time_color
         )
+        
+        # Add total votes and time remaining to description
+        description = f"🗳️ **Total Votes:** {total_votes}\n"
+        
+        if "end_time" in poll:
+            end_time = datetime.fromisoformat(poll["end_time"])
+            now = datetime.now()
+            if end_time > now:
+                time_left = end_time - now
+                hours, remainder = divmod(time_left.seconds, 3600)
+                minutes, _ = divmod(remainder, 60)
+                time_str = f"{time_left.days}d {hours}h {minutes}m" if time_left.days > 0 else f"{hours}h {minutes}m"
+                description += f"⏳ **Time Remaining:** {time_str}\n"
+            else:
+                description += "⏰ **Poll has ended**\n"
+        
+        embed.description = description
+
+        # Define colors for options based on position
+        option_colors = [
+            0x3498db,  # Blue
+            0x2ecc71,  # Green
+            0xe74c3c,  # Red
+            0xf1c40f,  # Yellow
+            0x9b59b6,  # Purple
+            0x1abc9c   # Turquoise
+        ]
 
         # Add fields for each option
         for i, option in enumerate(self.options):
             votes = len(poll["votes"].get(str(i), []))
             percentage = (votes / total_votes * 100) if total_votes > 0 else 0
 
-            # Create progress bar
-            bar_length = 20
-            filled_length = int(bar_length * percentage / 100)
-            bar = "█" * filled_length + "░" * (bar_length - filled_length)
-
+            # Create progress bar with emoji
+            filled_length = int(10 * percentage / 100)
+            bar = "🟦" * filled_length + "⬜" * (10 - filled_length)
+            
+            # Get color for this option
+            color = option_colors[i % len(option_colors)]
+            
+            # Add field with emoji and formatting
             embed.add_field(
-                name=f"{option}",
-                value=f"{bar} {percentage:.1f}% ({votes} votes)",
+                name=f"{i+1}. {option}",
+                value=(
+                    f"{bar} **{percentage:.1f}%**\n"
+                    f"👥 **{votes}** vote{'s' if votes != 1 else ''} • "
+                    f"🎯 {percentage:.1f}% of total"
+                ),
                 inline=False
             )
 
@@ -184,27 +227,56 @@ class Polls(commands.Cog):
             # Count votes
             total_votes = sum(len(votes) for votes in poll["votes"].values())
 
-            # Create results embed
+            # Create results embed with gold color for completed polls
             embed = discord.Embed(
-                title=f"Poll Results: {poll['question']}",
-                description=f"The poll has ended with {total_votes} total votes.",
-                color=discord.Color.gold()
+                title=f"🏆 Poll Results: {poll['question']}",
+                color=0xf1c40f  # Gold color
             )
+            
+            # Add total votes and duration to description
+            description = f"🗳️ **Total Votes:** {total_votes}\n"
+            if "created_at" in poll and "end_time" in poll:
+                start = datetime.fromisoformat(poll["created_at"])
+                end = datetime.fromisoformat(poll["end_time"])
+                duration = end - start
+                hours, remainder = divmod(duration.seconds, 3600)
+                minutes, _ = divmod(remainder, 60)
+                duration_str = f"{duration.days}d {hours}h {minutes}m" if duration.days > 0 else f"{hours}h {minutes}m"
+                description += f"⏱️ **Duration:** {duration_str}\n"
+            
+            embed.description = description
 
-            # Add fields for each option
+            # Define medal emojis for top 3 options
+            medals = ["🥇", "🥈", "🥉"]
+            
+            # Get options sorted by vote count (descending)
             options = poll["options"]
-            for i, option in enumerate(options):
-                votes = len(poll["votes"].get(str(i), []))
+            sorted_options = sorted(
+                [(i, len(poll["votes"].get(str(i), []))) for i in range(len(options))],
+                key=lambda x: x[1],
+                reverse=True
+            )
+            
+            # Add fields for each option in order of votes
+            for rank, (i, votes) in enumerate(sorted_options):
+                option = options[i]
                 percentage = (votes / total_votes * 100) if total_votes > 0 else 0
-
-                # Create progress bar
-                bar_length = 20
-                filled_length = int(bar_length * percentage / 100)
-                bar = "█" * filled_length + "░" * (bar_length - filled_length)
-
+                
+                # Create progress bar with emoji
+                filled_length = int(10 * percentage / 100)
+                bar = "🟨" * filled_length + "⬜" * (10 - filled_length)
+                
+                # Add medal for top 3
+                medal = f"{medals[rank]} " if rank < 3 else ""
+                
+                # Add field with ranking and formatting
                 embed.add_field(
-                    name=f"{option}",
-                    value=f"{bar} {percentage:.1f}% ({votes} votes)",
+                    name=f"{medal}{option}",
+                    value=(
+                        f"{bar} **{percentage:.1f}%**\n"
+                        f"👥 **{votes}** vote{'s' if votes != 1 else ''} • "
+                        f"🎯 {percentage:.1f}% of total"
+                    ),
                     inline=False
                 )
 

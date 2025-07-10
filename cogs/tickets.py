@@ -420,53 +420,248 @@ async def is_admin(interaction: discord.Interaction) -> bool:
     return any(role_id in user_role_ids for role_id in admin_roles)
 
 
-# Ticket category select menu
+class TicketCategoryButton(discord.ui.Button):
+    def __init__(self, category, row=0):
+        super().__init__(
+            style=discord.ButtonStyle.primary,
+            label=category["name"],
+            emoji=category.get("emoji", "🎫"),
+            custom_id=f"ticket_{category['name'].lower().replace(' ', '_')}",
+            row=row
+        )
+        self.category = category
+        
+    async def callback(self, interaction: discord.Interaction):
+        # Defer to prevent interaction timeout
+        await interaction.response.defer(ephemeral=True)
+        
+        # Check if user already has an open ticket
+        guild = interaction.guild
+        for channel in guild.channels:
+            if not isinstance(channel, discord.TextChannel):
+                continue
+                
+            # Check if channel is a ticket channel for this user
+            metadata = TicketMetadata.from_topic(channel.topic)
+            if (metadata and 
+                metadata.user_id == interaction.user.id and 
+                metadata.status == "open"):
+                await interaction.followup.send(
+                    f"You already have an open ticket: {channel.mention}", 
+                    ephemeral=True
+                )
+                return
+
+        # Create new ticket
+        ticket_id = str(uuid.uuid4())[:8]
+        category_name = self.category["name"]
+        
+        # Show the appropriate modal based on the selected category
+        modal = None
+        if "Resource Issue" in category_name:
+            modal = ResourceIssueModal()
+        elif "Partner" in category_name or "Sponsor" in category_name:
+            modal = PartnerSponsorModal()
+        elif "Staff" in category_name or "Application" in category_name:
+            modal = StaffApplicationModal()
+        elif "Content" in category_name or "Creator" in category_name:
+            modal = ContentCreatorModal()
+        else:  # General Support, Other, or any other category
+            modal = OtherInquiryModal()
+        
+        # Store the ticket creation context on the modal
+        modal.ticket_id = ticket_id
+        modal.category = category_name
+        modal.guild = guild
+        modal.interaction = interaction
+        modal.overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(
+                read_messages=True, 
+                send_messages=True, 
+                manage_channels=True,
+                manage_roles=True
+            )
+        }
+        
+        # Add admin roles to channel permissions
+        config = load_config()
+        for role_id in config.get("admin_roles", []):
+            role = guild.get_role(int(role_id))
+            if role:
+                modal.overwrites[role] = discord.PermissionOverwrite(
+                    read_messages=True, 
+                    send_messages=True
+                )
+        
+        # Show the modal to the user
+        await interaction.followup.send_modal(modal)
+
+
 class TicketView(discord.ui.View):
     def __init__(self, categories=None):
         super().__init__(timeout=None)
-        self.add_item(TicketCategorySelect(categories))
-
-
-class TicketCategorySelect(discord.ui.Select):
-    def __init__(self, categories=None):
-        # Load default categories if none provided
         if not categories:
             try:
                 config = load_data('config')
                 categories = config.get('ticket_categories', [
                     {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
                     {"name": "Resource Issue", "emoji": "⚠️", "description": "Report a problem with a resource"},
-                    {"name": "Partner- or sponsorship", "emoji": "💰", "description": "Partner or sponsorship inqueries"},
-                    {"name": "Staff Application - if open", "emoji": "🔒", "description": "Request for staff application, if open"},
-                    {"name": "Other", "emoji": "📝", "description": "Other inquiries (e.g. bug reports)"}
+                    {"name": "Partner/Sponsor", "emoji": "💰", "description": "Partner or sponsorship inquiries"},
+                    {"name": "Staff Application", "emoji": "🔒", "description": "Request for staff application"},
+                    {"name": "Content Creator", "emoji": "📷", "description": "Content creator application"},
+                    {"name": "Other", "emoji": "📝", "description": "Other inquiries"}
                 ])
             except Exception as e:
                 logger.error(f"Error loading config: {e}")
                 categories = [
                     {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
                     {"name": "Resource Issue", "emoji": "⚠️", "description": "Report a problem with a resource"},
-                    {"name": "Partner- or sponsorship", "emoji": "💰", "description": "Partner or sponsorship inqueries"},
-                    {"name": "Staff Application - if open", "emoji": "🔒", "description": "Request for staff application, if open"},
-                    {"name": "Other", "emoji": "📝", "description": "Other inquiries (e.g. bug reports)"}
+                    {"name": "Partner/Sponsor", "emoji": "💰", "description": "Partner or sponsorship inquiries"},
+                    {"name": "Staff Application", "emoji": "🔒", "description": "Request for staff application"},
+                    {"name": "Content Creator", "emoji": "📷", "description": "Content creator application"},
+                    {"name": "Other", "emoji": "📝", "description": "Other inquiries"}
                 ]
+        
+        # Add buttons in rows of 2
+        row = 0
+        for i, category in enumerate(categories):
+            if i > 0 and i % 2 == 0:
+                row += 1
+            self.add_item(TicketCategoryButton(category, row=row))
 
-        # Create options from categories
-        options = []
-        for category in categories:
-            options.append(
-                discord.SelectOption(
-                    label=category["name"],
-                    description=category.get("description", f"Create a {category['name']} ticket"),
-                    emoji=category.get("emoji", "🎫"),
-                    value=category["name"]
+
+# Ticket category button panel
+class TicketPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        
+    @discord.ui.button(
+        label="General Support", 
+        style=discord.ButtonStyle.primary, 
+        emoji="❓",
+        custom_id="ticket_general_support",
+        row=0
+    )
+    async def general_support_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_ticket_creation(interaction, "General Support")
+    
+    @discord.ui.button(
+        label="Resource Issue", 
+        style=discord.ButtonStyle.danger, 
+        emoji="⚠️",
+        custom_id="ticket_resource_issue",
+        row=0
+    )
+    async def resource_issue_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_ticket_creation(interaction, "Resource Issue")
+    
+    @discord.ui.button(
+        label="Partner/Sponsor", 
+        style=discord.ButtonStyle.success, 
+        emoji="💰",
+        custom_id="ticket_partner_sponsor",
+        row=1
+    )
+    async def partner_sponsor_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_ticket_creation(interaction, "Partner/Sponsor")
+    
+    @discord.ui.button(
+        label="Staff Application", 
+        style=discord.ButtonStyle.secondary, 
+        emoji="🔒",
+        custom_id="ticket_staff_application",
+        row=1
+    )
+    async def staff_application_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_ticket_creation(interaction, "Staff Application")
+    
+    @discord.ui.button(
+        label="Content Creator", 
+        style=discord.ButtonStyle.primary, 
+        emoji="📷",
+        custom_id="ticket_content_creator",
+        row=2
+    )
+    async def content_creator_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_ticket_creation(interaction, "Content Creator")
+    
+    @discord.ui.button(
+        label="Other", 
+        style=discord.ButtonStyle.secondary, 
+        emoji="📝",
+        custom_id="ticket_other",
+        row=2
+    )
+    async def other_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_ticket_creation(interaction, "Other")
+    
+    async def handle_ticket_creation(self, interaction: discord.Interaction, category_name: str):
+        # Defer to prevent interaction timeout
+        await interaction.response.defer(ephemeral=True)
+        
+        # Check if user already has an open ticket
+        guild = interaction.guild
+        for channel in guild.channels:
+            if not isinstance(channel, discord.TextChannel):
+                continue
+                
+            # Check if channel is a ticket channel for this user
+            metadata = TicketMetadata.from_topic(channel.topic)
+            if (metadata and 
+                metadata.user_id == interaction.user.id and 
+                metadata.status == "open"):
+                await interaction.followup.send(
+                    f"You already have an open ticket: {channel.mention}", 
+                    ephemeral=True
                 )
-            )
+                return
 
-        super().__init__(
-            placeholder="Select ticket category",
-            custom_id="ticket_category_select",
-            options=options
-        )
+        # Create new ticket
+        ticket_id = str(uuid.uuid4())[:8]
+        
+        # Show the appropriate modal based on the selected category
+        modal = None
+        if "Resource Issue" in category_name:
+            modal = ResourceIssueModal()
+        elif "Partner" in category_name or "Sponsor" in category_name:
+            modal = PartnerSponsorModal()
+        elif "Staff" in category_name or "Application" in category_name:
+            modal = StaffApplicationModal()
+        elif "Content" in category_name or "Creator" in category_name:
+            modal = ContentCreatorModal()
+        else:  # General Support, Other, or any other category
+            modal = OtherInquiryModal()
+        
+        # Store the ticket creation context on the modal
+        modal.ticket_id = ticket_id
+        modal.category = category_name
+        modal.guild = guild
+        modal.interaction = interaction
+        modal.overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(
+                read_messages=True, 
+                send_messages=True, 
+                manage_channels=True,
+                manage_roles=True
+            )
+        }
+        
+        # Add admin roles to channel permissions
+        config = load_config()
+        for role_id in config.get("admin_roles", []):
+            role = guild.get_role(int(role_id))
+            if role:
+                modal.overwrites[role] = discord.PermissionOverwrite(
+                    read_messages=True, 
+                    send_messages=True
+                )
+        
+        # Show the modal to the user
+        await interaction.followup.send_modal(modal)
 
     async def callback(self, interaction: discord.Interaction):
         # Check if user already has an open ticket
@@ -554,8 +749,17 @@ class TicketCategorySelect(discord.ui.Select):
 
         # Create the channel with metadata in topic
         try:
+            # Create a clean channel name with username and category
+            username = ''.join(c for c in interaction.user.name if c.isalnum() or c in ('-', '_')).lower()
+            category_short = ''.join(word[0].upper() for word in category.split() if word[0].isalnum())
+            channel_name = f"ticket-{username}-{ticket_id}-{category_short}"
+            
+            # Ensure channel name meets Discord's requirements (2-100 chars, lowercase, no special chars)
+            channel_name = ''.join(c for c in channel_name if c.isalnum() or c in ('-', '_')).lower()
+            channel_name = channel_name[:100]  # Ensure max length
+            
             channel = await guild.create_text_channel(
-                name=f"ticket-{ticket_id}",
+                name=channel_name,
                 overwrites=modal.overwrites,
                 category=category_channel,
                 topic=metadata.to_topic(),
@@ -583,7 +787,7 @@ class TicketCategorySelect(discord.ui.Select):
             title=f"Ticket #{ticket_id} - {category}",
             description=(
                 f"Thank you for creating a ticket, {interaction.user.mention}!\n"
-                "An admin will be with you shortly.\n"
+                "A staff member will be with you shortly.\n"
             ),
             color=discord.Color.blue()
         )
@@ -592,27 +796,34 @@ class TicketCategorySelect(discord.ui.Select):
         if form_embed:
             embed.description += "\n**Your submission:**"
             for field in form_embed.fields:
-                embed.add_field(name=field.name, value=field.value[:1024], inline=field.inline)
+                # Handle markdown in field values
+                value = field.value
+                if not value.startswith(('http', '<@', '`')) and 'http' in value:
+                    # Convert plain text URLs to markdown links
+                    import re
+                    value = re.sub(r'(https?://\S+)', r'[\1](\1)', value)
+                embed.add_field(name=field.name, value=value[:1024], inline=field.inline)
         
         # Add metadata fields
-        embed.add_field(name="Category", value=category, inline=True)
-        embed.add_field(name="Created", 
+        embed.add_field(name="👤 User", value=interaction.user.mention, inline=True)
+        embed.add_field(name="📅 Created", 
                        value=f"<t:{int(datetime.now().timestamp())}:R>", 
                        inline=True)
-        embed.add_field(name="Priority", value="Normal", inline=True)
+        embed.add_field(name="🏷️ Category", value=category, inline=True)
         embed.set_footer(text=f"Ticket ID: {ticket_id} • User ID: {interaction.user.id}")
 
         # Create ticket management buttons
         ticket_controls = TicketControlsView(ticket_id)
         
-        # Mention support role if configured
+        # Get support role mention
         config = load_config()
-        mention = ""
-        if config.get("support_role_id"):
-            mention = f"<@&{config['support_role_id']}>"
+        support_mention = f"<@&{config['support_role_id']}>" if config.get("support_role_id") else "@Staff"
         
-        # Send the message
-        await channel.send(embed=embed, view=ticket_controls, content=mention)
+        # Create a clean mention message
+        mention_message = f"{support_mention} • {interaction.user.mention} has created a new ticket!"
+        
+        # Send the message with both the mention and the embed
+        await channel.send(content=mention_message, embed=embed, view=ticket_controls)
         
         # Log ticket creation to log channel if configured
         log_channel_id = config.get("ticket_log_channel")
@@ -1813,66 +2024,42 @@ class Tickets(commands.Cog):
 
         embed = discord.Embed(
             title="🎫 Support Ticket System",
-            description="Need help? Create a ticket by selecting a category below!",
+            description="Need help? Create a ticket by clicking one of the buttons below!",
             color=discord.Color.blue()
         )
+        
+        # Add a footer
+        embed.set_footer(text="Click a button below to create a ticket")
+        
+        # Add information about ticket categories
+        categories = [
+            {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
+            {"name": "Resource Issue", "emoji": "⚠️", "description": "Report a problem with a resource"},
+            {"name": "Partner/Sponsor", "emoji": "💰", "description": "Partner or sponsorship inquiries"},
+            {"name": "Staff Application", "emoji": "🔒", "description": "Apply to join our staff team"},
+            {"name": "Content Creator", "emoji": "📷", "description": "Content creator applications"},
+            {"name": "Other", "emoji": "📝", "description": "Other inquiries"}
+        ]
+        
+        # Add fields for each category
+        for category in categories:
+            embed.add_field(
+                name=f"{category['emoji']} {category['name']}",
+                value=category['description'],
+                inline=True
+            )
 
-        view = TicketView()
+        # Create the view with buttons
+        view = TicketPanelView()
+        
+        # Send the message with the embed and view
         await target_channel.send(embed=embed, view=view)
+        
+        # Send confirmation message
         await interaction.followup.send(f"Ticket system set up in {target_channel.mention}!", ephemeral=True)
-
+        
         # Log setup
-        logger.info(
-            f"Ticket system set up in channel {target_channel.id} by {interaction.user} (ID: {interaction.user.id})")
-
-    @app_commands.command(name="ticket_panel", description="Create a customized ticket panel")
-    @app_commands.describe(
-        channel="The channel to set up the ticket panel in",
-        title="The title for the ticket panel",
-        description="The description for the ticket panel",
-        color="The color for the embed (hex code like #FF0000)"
-    )
-    async def ticket_panel(
-            self,
-            interaction,
-            channel: discord.TextChannel = None,
-            title: str = "🎫 Support Ticket System",
-            description: str = "Need help? Create a ticket by selecting a category below!",
-            color: str = "#3498db"
-    ):
-        # Defer response to prevent timeout
-        await interaction.response.defer(ephemeral=True)
-
-        if not is_admin(interaction):
-            await interaction.followup.send("You don't have permission to use this command!", ephemeral=True)
-            return
-
-        target_channel = channel or interaction.channel
-
-        # Parse color
-        try:
-            if color.startswith('#'):
-                color = color[1:]
-            color_value = int(color, 16)
-        except ValueError:
-            await interaction.followup.send("Invalid color format! Use hex code like #FF0000", ephemeral=True)
-            return
-
-        embed = discord.Embed(
-            title=title,
-            description=description,
-            color=discord.Color(color_value)
-        )
-
-        embed.set_footer(text=f"Created by {interaction.user}")
-
-        view = TicketView()
-        await target_channel.send(embed=embed, view=view)
-        await interaction.followup.send(f"Custom ticket panel created in {target_channel.mention}!", ephemeral=True)
-
-        # Log setup
-        logger.info(
-            f"Custom ticket panel created in channel {target_channel.id} by {interaction.user} (ID: {interaction.user.id})")
+        logger.info(f"Ticket system set up in channel {target_channel.id} by {interaction.user} (ID: {interaction.user.id})")
 
     @app_commands.command(name="ticket_categories", description="Customize ticket categories")
     async def ticket_categories(self, interaction):
