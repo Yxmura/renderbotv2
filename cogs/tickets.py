@@ -827,77 +827,6 @@ class TicketPanelView(discord.ui.View):
             
         return channel, metadata
         
-    async def send_ticket_created_message(self, interaction: discord.Interaction, channel, ticket_id, category, form_embed=None):
-        """Send the initial ticket message with the form data."""
-        # Create the main ticket embed
-        embed = discord.Embed(
-            title=f"Ticket #{ticket_id} - {category}",
-            description=(
-                f"Thank you for creating a ticket, {interaction.user.mention}!\n"
-                "A staff member will be with you shortly.\n"
-            ),
-            color=discord.Color.blue()
-        )
-        
-        # Add form data if provided
-        if form_embed:
-            embed.description += "\n**Your submission:**"
-            for field in form_embed.fields:
-                # Handle markdown in field values
-                value = field.value
-                if not value.startswith(('http', '<@', '`')) and 'http' in value:
-                    # Convert plain text URLs to markdown links
-                    import re
-                    value = re.sub(r'(https?://\S+)', r'[\1](\1)', value)
-                embed.add_field(name=field.name, value=value[:1024], inline=field.inline)
-        
-        # Add metadata fields
-        embed.add_field(name="👤 User", value=interaction.user.mention, inline=True)
-        embed.add_field(name="📅 Created", 
-                       value=f"<t:{int(datetime.now().timestamp())}:R>", 
-                       inline=True)
-        embed.add_field(name="🏷️ Category", value=category, inline=True)
-        embed.set_footer(text=f"Ticket ID: {ticket_id} • User ID: {interaction.user.id}")
-
-        # Create ticket management buttons
-        ticket_controls = TicketControlsView(ticket_id)
-        
-        # Get support role mention
-        config = load_config()
-        support_mention = f"<@&{config['support_role_id']}>" if config.get("support_role_id") else "@Staff"
-        
-        # Create a clean mention message
-        mention_message = f"{support_mention} • {interaction.user.mention} has created a new ticket!"
-        
-        # Send the main ticket message
-        ticket_msg = await channel.send(content=mention_message, embed=embed, view=ticket_controls)
-
-        # --- Create the metadata message and set channel topic ---
-        initial_metadata = {
-            "ticket_id": ticket_id,
-            "user_id": interaction.user.id,
-            "category": category,
-            "status": "open",
-            "created_at": datetime.now().isoformat(),
-            "claimed_by": None,
-            "closed_by": None,
-            "closed_at": None,
-            "close_reason": None,
-            "priority": "normal",
-            "main_ticket_message_id": ticket_msg.id,
-            "last_activity": datetime.now().isoformat()  # For auto-close tracking
-        }
-        await create_metadata_message(channel, initial_metadata)
-
-        # Log ticket creation to log channel if configured
-        log_channel_id = config.get("ticket_log_channel")
-        if log_channel_id:
-            log_channel = interaction.guild.get_channel(int(log_channel_id))
-            if log_channel:
-                log_embed = discord.Embed(
-                    title=f"Ticket #{ticket_id} Created",
-                    color=discord.Color.green()
-                )
                 log_embed.add_field(name="User", 
                                  value=f"{interaction.user.mention} ({interaction.user.id})", 
                                  inline=True)
@@ -939,12 +868,439 @@ class TicketPanelView(discord.ui.View):
             logger.error(f"Failed to log ticket creation: {e}")
 
 
-class TicketControlsView(discord.ui.View):
-    """View for ticket control buttons."""
+class AssignTicketButton(discord.ui.Button):
+    """Button for claiming/unclaiming a ticket."""
     
+    def __init__(self, ticket_id: str, is_assigned: bool = False):
+        self.ticket_id = ticket_id
+        self.is_assigned = is_assigned
+        
+        # Set button style and label based on assignment state
+        style = discord.ButtonStyle.success if not is_assigned else discord.ButtonStyle.danger
+        label = "Claim Ticket" if not is_assigned else "Unassign"
+        emoji = "🙋" if not is_assigned else "✖️"
+        
+        super().__init__(
+            style=style,
+            label=label,
+            emoji=emoji,
+            custom_id=f"ticket_assign_{ticket_id}",
+            row=1
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        """Handle button click to claim or unassign the ticket."""
+        # Defer the interaction first
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        
+        # Get the parent view
+        view = self.view
+        if not hasattr(view, 'ticket_id'):
+            await interaction.followup.send("❌ Could not process this action. Please try again.", ephemeral=True)
+            return
+        
+        # Get ticket metadata
+        metadata = await view.get_ticket_metadata(interaction)
+        if not metadata:
+            await interaction.followup.send("❌ Could not find ticket metadata.", ephemeral=True)
+            return
+        
+        # Toggle assignment
+        if self.is_assigned:
+            # Unassign the ticket
+            updates = {
+                'assigned_to': None,
+                'assigned_at': None,
+                'assigned_by': None
+            }
+            success = await view.update_ticket_metadata(interaction, updates)
+            if success:
+                await interaction.followup.send("✅ You have unassigned this ticket.", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Failed to unassign the ticket.", ephemeral=True)
+        else:
+            # Assign the ticket to the user
+            updates = {
+                'assigned_to': interaction.user.id,
+                'assigned_at': datetime.now().isoformat(),
+                'assigned_by': interaction.user.id
+            }
+            success = await view.update_ticket_metadata(interaction, updates)
+            if success:
+                await interaction.followup.send("✅ You have claimed this ticket!", ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Failed to claim the ticket.", ephemeral=True)
+
+
+class PrioritySelect(discord.ui.Select):
+    """Select menu for setting ticket priority."""
+    
+    def __init__(self, ticket_id: str, current_priority: str = 'normal'):
+        self.ticket_id = ticket_id
+        
+        # Define priority options
+        options = [
+            discord.SelectOption(
+                label="Urgent",
+                description="Critical issue requiring immediate attention",
+                emoji="🔴",
+                value="urgent",
+                default=(current_priority == 'urgent')
+            ),
+            discord.SelectOption(
+                label="High",
+                description="Important issue that should be addressed soon",
+                emoji="🟠",
+                value="high",
+                default=(current_priority == 'high')
+            ),
+            discord.SelectOption(
+                label="Normal",
+                description="Standard priority issue",
+                emoji="🟡",
+                value="normal",
+                default=(current_priority == 'normal')
+            ),
+            discord.SelectOption(
+                label="Low",
+                description="Minor issue that can wait",
+                emoji="🔵",
+                value="low",
+                default=(current_priority == 'low')
+            )
+        ]
+        
+        super().__init__(
+            placeholder=f"Set priority (Current: {current_priority.capitalize()})",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id=f"ticket_priority_{ticket_id}",
+            row=1
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        """Handle priority selection."""
+        # Defer the interaction first
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        
+        # Get the selected priority
+        priority = self.values[0].lower()
+        
+        # Get the parent view
+        view = self.view
+        if not hasattr(view, 'ticket_id'):
+            await interaction.followup.send("❌ Could not process this action. Please try again.", ephemeral=True)
+            return
+        
+        # Update the ticket metadata
+        updates = {'priority': priority}
+        success = await view.update_ticket_metadata(interaction, updates)
+        
+        if success:
+            # Update the select menu to show the new priority
+            self.placeholder = f"Set priority (Current: {priority.capitalize()})"
+            for option in self.options:
+                option.default = (option.value == priority)
+            
+            await interaction.message.edit(view=view)
+            await interaction.followup.send(f"✅ Priority set to **{priority.capitalize()}**", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ Failed to update ticket priority.", ephemeral=True)
+
+
+class AssignTicketButton(discord.ui.Button):
+    def __init__(self, ticket_id: str, assigned: bool = False):
+        self.ticket_id = ticket_id
+        self.assigned = assigned
+        super().__init__(
+            style=discord.ButtonStyle.success if not assigned else discord.ButtonStyle.danger,
+            label="Claim Ticket" if not assigned else "Unassign",
+            emoji="👤" if not assigned else "❌",
+            custom_id=f"ticket_assign_{ticket_id}",
+            row=0
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        # Get the ticket metadata
+        metadata = await self.view.get_ticket_metadata(interaction.channel)
+        if not metadata:
+            await interaction.response.send_message("❌ Could not find ticket metadata.", ephemeral=True)
+            return
+        
+        # If unassigning
+        if self.assigned:
+            metadata['assigned_to'] = None
+            metadata['assigned_at'] = None
+            metadata['assigned_by'] = None
+            await interaction.response.send_message(embed=self.view.get_assignment_embed(None, interaction.user))
+        else:
+            # Assign to the user who clicked
+            metadata['assigned_to'] = interaction.user.id
+            metadata['assigned_at'] = datetime.now().isoformat()
+            metadata['assigned_by'] = interaction.user.id
+            await interaction.response.send_message(embed=self.view.get_assignment_embed(interaction.user, interaction.user))
+        
+        # Update the message with the new view
+        await self.view.update_controls(interaction.message, metadata)
+        await update_metadata_message(interaction.channel, metadata)
+
+class PrioritySelect(discord.ui.Select):
+    def __init__(self, ticket_id: str, current_priority: str = "normal"):
+        self.ticket_id = ticket_id
+        options = [
+            discord.SelectOption(label="🔴 Urgent", value="urgent", description="Critical issue requiring immediate attention", emoji="🔴"),
+            discord.SelectOption(label="🟠 High", value="high", description="Important issue that needs prompt attention", emoji="🟠"),
+            discord.SelectOption(label="🟡 Normal", value="normal", description="Standard priority", emoji="🟡", default=True),
+            discord.SelectOption(label="🔵 Low", value="low", description="Minor issue or question", emoji="🔵")
+        ]
+        
+        # Set the default option
+        for option in options:
+            option.default = (option.value == current_priority)
+        
+        super().__init__(
+            placeholder="Set priority...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id=f"ticket_priority_{ticket_id}",
+            row=1
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        priority = self.values[0]
+        metadata = await self.view.get_ticket_metadata(interaction.channel)
+        if not metadata:
+            await interaction.response.send_message("❌ Could not find ticket metadata.", ephemeral=True)
+            return
+        
+        metadata['priority'] = priority
+        await update_metadata_message(interaction.channel, metadata)
+        
+        # Get priority color
+        priority_colors = {
+            'urgent': 0xff0000,  # Red
+            'high': 0xff6b00,    # Orange
+            'normal': 0xffff00,  # Yellow
+            'low': 0x00a2ff     # Blue
+        }
+        
+        embed = discord.Embed(
+            title=f"Priority Updated: {priority.title()}",
+            description=f"Ticket priority has been updated by {interaction.user.mention}",
+            color=priority_colors.get(priority, 0x00a2ff)
+        )
     def __init__(self, ticket_id: str):
         super().__init__(timeout=None)
         self.ticket_id = ticket_id
+        self.config = load_config()
+        
+        # Add control buttons
+        self.add_item(AssignTicketButton(ticket_id, is_assigned=False))
+        self.add_item(PrioritySelect(ticket_id, 'normal'))
+        
+        # Add close and transcript buttons
+        self.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.danger,
+            label="Close Ticket",
+            emoji="🔒",
+            custom_id=f"ticket_close_{ticket_id}",
+            row=2
+        ))
+        
+        self.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.secondary,
+            label="Transcript",
+            emoji="📝",
+            custom_id=f"ticket_transcript_{ticket_id}",
+            row=2
+        ))
+    
+    def load_config(self):
+        """Load the bot configuration."""
+        self.config = load_config()
+        return self.config
+    
+    async def get_ticket_metadata(self, interaction: discord.Interaction) -> Optional[dict]:
+        """Get the ticket metadata from the channel's metadata message."""
+        try:
+            # Try to find the metadata message in the channel
+            async for message in interaction.channel.history(limit=50):
+                if message.embeds and message.embeds[0].title == "📝 Ticket Metadata":
+                    # Parse the metadata from the embed
+                    embed = message.embeds[0]
+                    metadata_str = embed.description.strip('```json\n').strip('\n```')
+                    return json.loads(metadata_str)
+            return None
+        except Exception as e:
+            logger.error(f"Error getting ticket metadata: {e}")
+            await interaction.followup.send("❌ Failed to get ticket metadata.", ephemeral=True)
+            return None
+            
+    async def update_control_message(self, interaction: discord.Interaction) -> None:
+        """Update the control message with current ticket state."""
+        metadata = await self.get_ticket_metadata(interaction)
+        if not metadata:
+            return
+            
+        # Get the control message
+        control_message_id = metadata.get('control_message_id')
+        if not control_message_id:
+            return
+            
+        try:
+            control_message = await interaction.channel.fetch_message(control_message_id)
+            if not control_message:
+                return
+                
+            # Get the current embed
+            if not control_message.embeds:
+                return
+                
+            embed = control_message.embeds[0]
+            
+            # Update status and priority in the embed
+            status = metadata.get('status', 'open')
+            priority = metadata.get('priority', 'normal')
+            
+            # Update the description
+            description = embed.description
+            description = re.sub(r'\*\*Status:\*\* .*\n', f'**Status:** 🟢 Open\n' if status == 'open' else '**Status:** 🔴 Closed\n', description)
+            description = re.sub(r'\*\*Priority:\*\* .*\n', f'**Priority:** {self.get_priority_emoji(priority)} {priority.capitalize()}\n', description)
+            
+            # Update assigned user if available
+            assigned_to = metadata.get('assigned_to')
+            if assigned_to:
+                member = interaction.guild.get_member(assigned_to)
+                if member:
+                    description = re.sub(r'\*\*Assigned to:\*\* .*\n', f'**Assigned to:** {member.mention}\n', description)
+            
+            # Update the embed
+            embed.description = description
+            await control_message.edit(embed=embed, view=self)
+            
+        except Exception as e:
+            logger.error(f"Error updating control message: {e}")
+            
+    def get_priority_emoji(self, priority: str) -> str:
+        """Get the emoji for a priority level."""
+        emojis = {
+            'urgent': '🔴',
+            'high': '🟠',
+            'normal': '🟡',
+            'low': '🔵'
+        }
+        return emojis.get(priority.lower(), '⚪')
+    
+    async def update_ticket_metadata(self, interaction: discord.Interaction, updates: dict) -> bool:
+        """Update the ticket metadata with the given updates."""
+        try:
+            # Find and update the metadata message
+            async for message in interaction.channel.history(limit=50):
+                if message.embeds and message.embeds[0].title == "📝 Ticket Metadata":
+                    # Get current metadata
+                    embed = message.embeds[0]
+                    metadata_str = embed.description.strip('```json\n').strip('\n```')
+                    metadata = json.loads(metadata_str)
+                    
+                    # Update with new values
+                    metadata.update(updates)
+                    metadata['last_activity'] = datetime.now().isoformat()
+                    
+                    # Update the embed
+                    new_embed = discord.Embed(
+                        title=embed.title,
+                        description=f"```json\n{json.dumps(metadata, indent=2)}\n```",
+                        color=embed.color
+                    )
+                    await message.edit(embed=new_embed)
+                    
+                    # Update the channel topic if ticket_id is in updates
+                    if 'ticket_id' in updates:
+                        await interaction.channel.edit(topic=f"ticket_{updates['ticket_id']}_{message.id}")
+                    
+                    # Update the control message
+                    await self.update_control_message(interaction)
+                    
+                    # Log the update
+                    if 'status' in updates:
+                        status = updates['status']
+                        log_msg = f"Ticket {self.ticket_id} marked as {status}"
+                        if status == 'closed' and 'closed_by' in updates:
+                            closer = interaction.guild.get_member(updates['closed_by'])
+                            if closer:
+                                log_msg += f" by {closer.mention}"
+                        await interaction.channel.send(log_msg)
+                    
+                    return True
+            return False
+        except Exception as e:
+            logger.error(f"Error updating ticket metadata: {e}")
+            await interaction.followup.send("❌ Failed to update ticket metadata.", ephemeral=True)
+            return False
+        
+    def get_assignment_embed(self, assigned_to: Optional[discord.Member] = None, assigned_by: Optional[discord.Member] = None) -> discord.Embed:
+        """Create an embed for ticket assignment."""
+        embed = discord.Embed(
+            title="🎫 Ticket Assigned" if assigned_to else "🎫 Ticket Unassigned",
+            color=discord.Color.blue() if assigned_to else discord.Color.orange()
+        )
+        if assigned_to:
+            embed.description = f"This ticket has been assigned to {assigned_to.mention}"
+            if assigned_by and assigned_by.id != assigned_to.id:
+                embed.description += f" by {assigned_by.mention}"
+            embed.set_footer(text=f"Assigned at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        else:
+            embed.description = "This ticket is now unassigned"
+            if assigned_by:
+                embed.description += f" by {assigned_by.mention}"
+        return embed
+        
+    async def update_controls(self, message: discord.Message, metadata: dict):
+        """Update the control message with current ticket state."""
+        # Clear existing items
+        self.clear_items()
+        
+        # Get the guild and members
+        guild = message.guild
+        assigned_to = None
+        if metadata.get('assigned_to'):
+            assigned_to = guild.get_member(metadata['assigned_to'])
+        
+        # Add assign/unassign button
+        is_assigned = bool(assigned_to)
+        self.add_item(AssignTicketButton(self.ticket_id, is_assigned))
+        
+        # Add priority selector
+        current_priority = metadata.get('priority', 'normal')
+        self.add_item(PrioritySelect(self.ticket_id, current_priority))
+        
+        # Add close button
+        self.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.danger,
+            label="Close Ticket",
+            emoji="🔒",
+            custom_id=f"ticket_close_{self.ticket_id}",
+            row=2
+        ))
+        
+        # Add transcript button
+        self.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.secondary,
+            label="Generate Transcript",
+            emoji="📋",
+            custom_id=f"ticket_transcript_{self.ticket_id}",
+            row=2
+        ))
+        
+        # Update the message with the new view
+        try:
+            await message.edit(view=self)
+        except discord.NotFound:
+            logger.warning(f"Could not update ticket controls: message not found")
+        except discord.HTTPException as e:
+            logger.error(f"Failed to update ticket controls: {e}")
     
     async def get_ticket_metadata(self, channel: discord.TextChannel) -> Optional[dict]:
         """Get ticket metadata from the metadata message in the channel."""
@@ -1665,7 +2021,8 @@ class Tickets(commands.Cog):
         if message.author.bot or not message.guild:
             return
 
-        # Check if the message is in a ticket channel
+        # Load config and check if the message is in a ticket channel
+        config = load_config()
         ticket_category_id = config.get("ticket_category")
         if not (isinstance(message.channel, discord.TextChannel) and 
                 ticket_category_id and 
