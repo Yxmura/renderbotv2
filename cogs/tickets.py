@@ -1743,6 +1743,7 @@ class Tickets(commands.Cog):
             logger.error(f"Failed to send auto-close message in {channel.id}: {e}")
 
         # Log to log channel
+        config = load_config()
         log_channel_id = config.get("ticket_log_channel")
         if log_channel_id:
             log_channel = channel.guild.get_channel(int(log_channel_id))
