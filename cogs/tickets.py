@@ -378,7 +378,13 @@ class OtherInquiryModal(TicketFormModal):
 class TicketMetadata:
     """Class to handle ticket metadata and database operations."""
     def __init__(self, **kwargs):
-        self.ticket_id = kwargs.get('ticket_id', str(uuid.uuid4()))
+        # Generate a new ticket ID if not provided
+        ticket_id = kwargs.get('ticket_id')
+        if not ticket_id or not self.is_valid_ticket_id(ticket_id):
+            # Generate a new 8-character UUID if the provided ID is invalid
+            ticket_id = str(uuid.uuid4())[:8].lower()
+            
+        self.ticket_id = ticket_id
         self.user_id = kwargs.get('user_id')
         self.category = kwargs.get('category')
         self.status = kwargs.get('status', 'open')
@@ -394,21 +400,35 @@ class TicketMetadata:
         self.guild_id = kwargs.get('guild_id')
 
     @classmethod
+    def is_valid_ticket_id(cls, ticket_id: str) -> bool:
+        """Check if a string is a valid ticket ID (8-char UUID)."""
+        import re
+        # Match 8-character alphanumeric string (case-insensitive)
+        return bool(re.match(r'^[a-f0-9]{8}$', ticket_id, re.IGNORECASE))
+
+    @classmethod
     async def from_topic(cls, topic: Optional[str]) -> Optional['TicketMetadata']:
         """Create TicketMetadata from channel topic (ticket ID)."""
         if not topic or topic.strip() == "":
             return None
+            
         ticket_id = topic.strip()
+        
+        # Skip lookup if the topic doesn't look like a valid ticket ID
+        if not cls.is_valid_ticket_id(ticket_id):
+            logger.warning(f"Invalid ticket ID format in topic: {repr(ticket_id)}")
+            return None
+            
         try:
             db = get_db()
             ticket_data = await db.tickets.get_ticket(ticket_id)
             if ticket_data:
                 return cls.from_dict(ticket_data)
             else:
-                logger.error(f"Ticket ID {ticket_id} not found in Supabase.")
+                logger.error(f"Ticket ID {ticket_id} not found in database.")
                 return None
         except Exception as e:
-            logger.error(f"Error loading ticket metadata from Supabase: {e}. Topic value: {repr(topic)}")
+            logger.error(f"Error loading ticket metadata from database: {e}. Topic value: {repr(topic)}")
             return None
     
     @classmethod
