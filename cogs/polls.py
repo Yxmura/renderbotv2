@@ -3,9 +3,14 @@ from discord import app_commands
 from discord.ext import commands
 import asyncio
 import re
+import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from supabase_client import get_db
+from bot import load_data
+
+# Set up logging
+logger = logging.getLogger('bot.polls')
 
 # Initialize database client
 db = get_db()
@@ -632,9 +637,16 @@ class Polls(commands.Cog):
         if poll_updates_role_id and str(poll_updates_role_id).isdigit():
             content = f'<@&{poll_updates_role_id}> New poll created!'
         
-        # Send the poll message
+        # Send the poll message directly
         try:
-            message = await interaction.channel.send(content=content, embed=embed)
+            # Create the poll view first
+            view = PollView("temp", options)  # We'll update this after creating the poll
+            
+            # Send the poll directly to the channel
+            await interaction.response.send_message(content=content, embed=embed, view=view)
+            
+            # Get the message that was sent
+            message = await interaction.channel.fetch_message(interaction.channel.last_message_id)
             
             # Store poll data in Supabase
             poll_data = {
@@ -657,19 +669,9 @@ class Polls(commands.Cog):
             if not created_poll or "id" not in created_poll:
                 raise Exception("Failed to create poll in database")
             
-            # Create and send the view with the poll ID from the database
+            # Update the view with the correct poll ID
             view = PollView(str(created_poll["id"]), options)
             await message.edit(view=view)
-            
-            # Send confirmation to the user
-            await interaction.response.send_message("✅ Poll created!", ephemeral=True, delete_after=5)
-            
-            # Try to delete the original response after a short delay
-            try:
-                await asyncio.sleep(5)
-                await interaction.delete_original_response()
-            except:
-                pass
                 
         except discord.Forbidden:
             await interaction.response.send_message(
@@ -686,69 +688,69 @@ class Polls(commands.Cog):
             except:
                 pass
 
-@app_commands.command(name="endpoll", description="End a poll")
-@app_commands.describe(
-    message_id="The message ID of the poll to end"
-)
-async def end_poll(self, interaction: discord.Interaction, message_id: str):
-    """End a poll before its scheduled end time."""
-    # Check if user has permission
-    if not interaction.user.guild_permissions.manage_messages:
-        await interaction.response.send_message(
-            "❌ You don't have permission to end polls!",
-            ephemeral=True
-        )
-        return
+    @app_commands.command(name="endpoll", description="End a poll")
+    @app_commands.describe(
+        message_id="The message ID of the poll to end"
+    )
+    async def end_poll(self, interaction: discord.Interaction, message_id: str):
+        """End a poll before its scheduled end time."""
+        # Check if user has permission
+        if not interaction.user.guild_permissions.manage_messages:
+            await interaction.response.send_message(
+                "❌ You don't have permission to end polls!",
+                ephemeral=True
+            )
+            return
 
-    # Ensure database is initialized
-    if not self._db_initialized:
+        # Ensure database is initialized
+        if not self._db_initialized:
+            try:
+                await self.initialize_db()
+            except Exception as e:
+                logger.error(f"Database initialization failed: {e}")
+                await interaction.response.send_message(
+                    "❌ Failed to initialize database connection. Please try again later.",
+                    ephemeral=True
+                )
+                return
+
+        # Find the poll in the database
         try:
-            await self.initialize_db()
+            poll = await db.get_poll_by_message(message_id)
+            if not poll:
+                await interaction.response.send_message(
+                    "❌ Poll not found! Make sure you entered the correct message ID.",
+                    ephemeral=True
+                )
+                return
+
+            # Check if poll is already closed
+            if poll.get("status") == "closed":
+                await interaction.response.send_message(
+                    "❌ This poll is already closed!",
+                    ephemeral=True
+                )
+                return
+
+            # Close the poll in the database
+            await db.close_poll(poll["id"])
+
+            # Send results
+            await self.send_poll_results(poll["id"])
+
+            await interaction.response.send_message(
+                "✅ Poll ended successfully!",
+                ephemeral=True
+            )
         except Exception as e:
-            logger.error(f"Database initialization failed: {e}")
-            await interaction.response.send_message(
-                "❌ Failed to initialize database connection. Please try again later.",
-                ephemeral=True
-            )
-            return
-
-    # Find the poll in the database
-    try:
-        poll = await db.get_poll_by_message(message_id)
-        if not poll:
-            await interaction.response.send_message(
-                "❌ Poll not found! Make sure you entered the correct message ID.",
-                ephemeral=True
-            )
-            return
-
-        # Check if poll is already closed
-        if poll.get("status") == "closed":
-            await interaction.response.send_message(
-                "❌ This poll is already closed!",
-                ephemeral=True
-            )
-            return
-
-        # Close the poll in the database
-        await db.close_poll(poll["id"])
-
-        # Send results
-        await self.send_poll_results(poll["id"])
-
-        await interaction.response.send_message(
-            "✅ Poll ended successfully!",
-            ephemeral=True
-        )
-    except Exception as e:
-        logger.error(f"Error ending poll: {e}")
-        try:
-            await interaction.response.send_message(
-                "❌ An error occurred while ending the poll. Please try again.",
-                ephemeral=True
-            )
-        except:
-            pass
+            logger.error(f"Error ending poll: {e}")
+            try:
+                await interaction.response.send_message(
+                    "❌ An error occurred while ending the poll. Please try again.",
+                    ephemeral=True
+                )
+            except:
+                pass
 
 
 async def setup(bot):

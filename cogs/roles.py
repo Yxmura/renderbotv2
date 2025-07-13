@@ -103,11 +103,8 @@ class Roles(commands.Cog):
         # Add footer with server name
         embed.set_footer(text=interaction.guild.name)
         
-        # Send confirmation to the command user
-        await interaction.response.send_message("✅ Roles information has been posted!", ephemeral=True)
-        
-        # Send the roles as a regular message to hide who executed the command
-        await interaction.channel.send(embed=embed)
+        # Send the roles directly to the channel without showing who executed the command
+        await interaction.response.send_message(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Roles(bot))
