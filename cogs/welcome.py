@@ -36,6 +36,10 @@ class Welcome(commands.Cog):
         if config.get("welcome_channel"):
             channel = self.bot.get_channel(int(config["welcome_channel"]))
             if channel:
+                # Update channel name with member count
+                await channel.edit(name=f"《👋》{member.guild.member_count}")
+                
+                # Send welcome message
                 embed = discord.Embed(
                     title=f"Welcome to {member.guild.name}!",
                     description=f"Welcome to the server! We're now at **{member.guild.member_count}** members!",
@@ -98,6 +102,13 @@ class Welcome(commands.Cog):
     @commands.Cog.listener()
     async def on_member_remove(self, member):
         config = load_data('config')
+        # Update welcome channel name with new member count
+        if config.get("welcome_channel"):
+            welcome_channel = self.bot.get_channel(int(config["welcome_channel"]))
+            if welcome_channel:
+                await welcome_channel.edit(name=f"《👋》{member.guild.member_count}")
+                
+        # Send goodbye message if goodbye channel is set
         if config.get("goodbye_channel"):
             channel = self.bot.get_channel(int(config["goodbye_channel"]))
             if channel:

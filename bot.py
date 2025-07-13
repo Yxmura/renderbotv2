@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 import dotenv
 from keep_alive import keep_alive
+from supabase_client import get_db
 
 dotenv.load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
@@ -52,6 +53,14 @@ class TicketBot(commands.Bot):
         ]
 
     async def setup_hook(self):
+        # Initialize database
+        try:
+            db = get_db()
+            await db.initialize()
+            logger.info("Database initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+
         # Load extensions
         for extension in self.initial_extensions:
             try:
@@ -60,7 +69,7 @@ class TicketBot(commands.Bot):
             except Exception as e:
                 logger.error(f"Failed to load extension {extension}: {e}")
 
-        # Ensure data directories exist
+        # Ensure data directories exist (for backward compatibility)
         self.ensure_data_directories()
 
     def ensure_data_directories(self):
@@ -109,15 +118,17 @@ class TicketBot(commands.Bot):
         ))
 
 
-# Helper functions for data management
+# Helper functions for data management (legacy support)
 def load_data(file):
-    with open(f'data/{file}.json', 'r') as f:
-        return json.load(f)
+    """Legacy function - use Supabase instead"""
+    from supabase_client import load_data as legacy_load_data
+    return legacy_load_data(file)
 
 
 def save_data(file, data):
-    with open(f'data/{file}.json', 'w') as f:
-        json.dump(data, f, indent=4)
+    """Legacy function - use Supabase instead"""
+    from supabase_client import save_data as legacy_save_data
+    legacy_save_data(file, data)
 
 
 # Check if user has admin role

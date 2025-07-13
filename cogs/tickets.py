@@ -3,17 +3,17 @@ from discord import app_commands
 from discord.ext import commands
 import json
 import asyncio
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import io
 import re
 import textwrap
 from datetime import datetime, timedelta
 import logging
 import os
-from typing import Dict, Optional, Any, List
 from dataclasses import dataclass, asdict, field
 import uuid
 from bot import load_data, save_data
+from supabase_client import get_db
 
 
 # Set up logging
@@ -357,57 +357,137 @@ class OtherInquiryModal(TicketFormModal):
         }
         
         # Call parent's on_submit to handle the rest
-        await super().on_submit(interaction)
 
 
 @dataclass
 class TicketMetadata:
-    """Class to handle ticket metadata serialization/deserialization."""
-    ticket_id: str
-    user_id: int
-    category: str
-    status: str = "open"
-    priority: str = "normal"
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    claimed_by: Optional[int] = None
-    last_activity: str = field(default_factory=lambda: datetime.now().isoformat())
-    closed_at: Optional[str] = None
-    closed_by: Optional[int] = None
-    close_reason: Optional[str] = None
-    close_type: Optional[str] = None
-    
+    """Class to handle ticket metadata and database operations."""
+    def __init__(self, **kwargs):
+        self.ticket_id = kwargs.get('ticket_id', str(uuid.uuid4()))
+        self.user_id = kwargs.get('user_id')
+        self.category = kwargs.get('category')
+        self.status = kwargs.get('status', 'open')
+        self.priority = kwargs.get('priority', 'normal')
+        self.created_at = kwargs.get('created_at', datetime.now().isoformat())
+        self.claimed_by = kwargs.get('claimed_by')
+        self.last_activity = kwargs.get('last_activity', datetime.now().isoformat())
+        self.closed_at = kwargs.get('closed_at')
+        self.closed_by = kwargs.get('closed_by')
+        self.close_reason = kwargs.get('close_reason')
+        self.close_type = kwargs.get('close_type')
+        self.channel_id = kwargs.get('channel_id')
+        self.guild_id = kwargs.get('guild_id')
+
     @classmethod
     def from_topic(cls, topic: Optional[str]) -> Optional['TicketMetadata']:
         """Create TicketMetadata from channel topic."""
-        if not topic or not topic.startswith("TICKET_METADATA:"):
+        if not topic:
             return None
             
         try:
-            json_str = topic.split("TICKET_METADATA:", 1)[1].strip()
-            data = json.loads(json_str)
-            return cls(**data)
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            data = json.loads(topic)
+            return cls.from_dict(data)
+        except (json.JSONDecodeError, TypeError) as e:
             logger.error(f"Error parsing ticket metadata: {e}")
             return None
     
+    @classmethod
+    def from_dict(cls, data: dict) -> 'TicketMetadata':
+        """Create TicketMetadata from dictionary."""
+        return cls(**data)
+    
+    @classmethod
+    async def from_channel(cls, channel: discord.TextChannel) -> Optional['TicketMetadata']:
+        """Load ticket metadata from database using channel."""
+        if not channel.topic or not channel.topic.isdigit():
+            return None
+            
+        try:
+            ticket_id = channel.topic
+            db = get_db()
+            ticket_data = await db.tickets.get_ticket(ticket_id)
+            if not ticket_data:
+                return None
+                
+            return cls.from_dict(ticket_data)
+        except Exception as e:
+            logger.error(f"Error loading ticket from database: {e}")
+            return None
+            
+    async def save(self):
+        """Save ticket metadata to database."""
+        try:
+            data = self.to_dict()
+            db = get_db()
+            
+            # Check if ticket exists
+            existing_ticket = await db.tickets.get_ticket(self.ticket_id)
+            
+            if existing_ticket:
+                # Update existing ticket
+                return await db.tickets.update_ticket(self.ticket_id, data)
+            else:
+                # Insert new ticket
+                ticket_id = await db.tickets.create_ticket(data)
+                return ticket_id is not None
+        except Exception as e:
+            logger.error(f"Error saving ticket to database: {e}")
+            return False
+    
     def to_topic(self) -> str:
         """Convert metadata to channel topic string."""
-        data = asdict(self)
-        json_str = json.dumps(data, ensure_ascii=False)
-        return f"TICKET_METADATA:{json_str}"
-    
+        return self.ticket_id
+        
+    def to_dict(self) -> dict:
+        """Convert metadata to dictionary."""
+        return {
+            'ticket_id': self.ticket_id,
+            'user_id': self.user_id,
+            'category': self.category,
+            'status': self.status,
+            'priority': self.priority,
+            'created_at': self.created_at,
+            'claimed_by': self.claimed_by,
+            'last_activity': self.last_activity,
+            'closed_at': self.closed_at,
+            'closed_by': self.closed_by,
+            'close_reason': self.close_reason,
+            'close_type': self.close_type,
+            'channel_id': self.channel_id,
+            'guild_id': self.guild_id
+        }
+        
     def update_activity(self):
         """Update last activity timestamp."""
         self.last_activity = datetime.now().isoformat()
-    
-    def close(self, closer_id: int, reason: str, close_type: str):
+        
+    async def close(self, closer_id: int, reason: str, close_type: str):
         """Close the ticket."""
         self.status = "closed"
-        self.closed_at = datetime.now().isoformat()
         self.closed_by = closer_id
         self.close_reason = reason
         self.close_type = close_type
+        self.closed_at = datetime.now().isoformat()
         self.update_activity()
+        await self.save()
+    
+    async def set_priority(self, priority: str):
+        """Set ticket priority."""
+        self.priority = priority
+        self.update_activity()
+        await self.save()
+    
+    async def claim(self, user_id: int):
+        """Claim ticket for a user."""
+        self.claimed_by = user_id
+        self.update_activity()
+        await self.save()
+    
+    async def unclaim(self):
+        """Unclaim ticket."""
+        self.claimed_by = None
+        self.update_activity()
+        await self.save()
 
 # Load config (only config, not tickets)
 def load_config():
@@ -551,7 +631,9 @@ class TicketView(discord.ui.View):
         super().__init__(timeout=None)
         if not categories:
             try:
-                config = load_data('config')
+                # Load categories from config.json
+                with open('data/config.json', 'r', encoding='utf-8') as f:
+                    config = json.load(f)
                 categories = config.get('ticket_categories', [
                     {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
                     {"name": "Resource Issue", "emoji": "⚠️", "description": "Report a problem with a resource"},
@@ -560,6 +642,7 @@ class TicketView(discord.ui.View):
                     {"name": "Content Creator", "emoji": "📷", "description": "Content creator application"},
                     {"name": "Other", "emoji": "📝", "description": "Other inquiries"}
                 ])
+                logger.info(f"Loaded {len(categories)} ticket categories from config")
             except Exception as e:
                 logger.error(f"Error loading config: {e}")
                 categories = [
@@ -576,7 +659,11 @@ class TicketView(discord.ui.View):
         for i, category in enumerate(categories):
             if i > 0 and i % 2 == 0:
                 row += 1
-            self.add_item(TicketCategoryButton(category, row=row))
+            try:
+                self.add_item(TicketCategoryButton(category, row=row))
+                logger.debug(f"Added button for category: {category.get('name')}")
+            except Exception as e:
+                logger.error(f"Error adding button for category {category.get('name', 'unknown')}: {e}")
 
 
 # Ticket category button panel
@@ -726,37 +813,22 @@ class TicketPanelView(discord.ui.View):
                     f"You already have an open ticket: {channel.mention}", 
                     ephemeral=True
                 )
-                return
-
-        # Create new ticket
-        category = self.values[0]
-        self.ticket_id = str(uuid.uuid4())[:8]  # Generate a short unique ID
-        self.interaction = interaction
-        
-        # Show the appropriate modal based on the selected category
-        modal = None
-        if "Resource Issue" in category:
-            modal = ResourceIssueModal()
-        elif "Partner" in category or "Sponsor" in category:
-            modal = PartnerSponsorModal()
-        elif "Staff" in category or "Application" in category:
-            modal = StaffApplicationModal()
-        elif "Content" in category or "Creator" in category:
-            modal = ContentCreatorModal()
-        else:  # General Support, Other, or any other category
-            modal = OtherInquiryModal()
-        
-        # Store the ticket creation context on the modal
-        modal.ticket_id = self.ticket_id
-        modal.category = category
+        # Create ticket ID and store context on the modal
+        ticket_id = str(uuid.uuid4())
+        modal.ticket_id = ticket_id
+        modal.category = category_name
         modal.guild = guild
         modal.interaction = interaction
         modal.overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            interaction.user: discord.PermissionOverwrite(
+                read_messages=True,
+                send_messages=True,
+                read_message_history=True
+            ),
             guild.me: discord.PermissionOverwrite(
-                read_messages=True, 
-                send_messages=True, 
+                read_messages=True,
+                send_messages=True,
                 manage_channels=True,
                 manage_roles=True
             )
@@ -773,99 +845,276 @@ class TicketPanelView(discord.ui.View):
                 )
         
         # Show the modal to the user
-        await interaction.response.send_modal(modal)
+        await interaction.followup.send_modal(modal)
 
     async def create_ticket_channel(self, interaction: discord.Interaction, modal: TicketFormModal):
         """Helper method to create the ticket channel after form submission."""
-        guild = interaction.guild
-        ticket_id = modal.ticket_id
-        category = modal.category
-        
-        # Get ticket category if set
-        config = load_config()
-        category_channel = None
-        if config.get("ticket_category_id"):
-            category_channel = guild.get_channel(int(config["ticket_category_id"]))
-
-        # Create ticket metadata
-        metadata = TicketMetadata(
-            ticket_id=ticket_id,
-            user_id=interaction.user.id,
-            category=category
-        )
-
-        # Create the channel with metadata in topic
         try:
-            # Create a clean channel name with username and category
-            username = ''.join(c for c in interaction.user.name if c.isalnum() or c in ('-', '_')).lower()
-            category_short = ''.join(word[0].upper() for word in category.split() if word[0].isalnum())
-            channel_name = f"ticket-{username}-{ticket_id}-{category_short}"
+            # Get the ticket category from config
+            config = load_config()
+            category_id = config.get('ticket_category_id')
+            if not category_id:
+                await interaction.followup.send(
+                    "Ticket category not configured. Please contact an admin.",
+                    ephemeral=True
+                )
+                return None
+                
+            # Create ticket channel
+            guild = interaction.guild
+            ticket_id = modal.ticket_id
+            ticket_channel_name = f"ticket-{ticket_id[:8]}"
             
-            # Ensure channel name meets Discord's requirements (2-100 chars, lowercase, no special chars)
-            channel_name = ''.join(c for c in channel_name if c.isalnum() or c in ('-', '_')).lower()
-            channel_name = channel_name[:100]  # Ensure max length
+            # Get the category
+            category = guild.get_channel(int(category_id))
+            if not category:
+                await interaction.followup.send(
+                    "Ticket category not found. Please contact an admin.",
+                    ephemeral=True
+                )
+                return None
             
-            channel = await guild.create_text_channel(
-                name=channel_name,
+            # Create the ticket channel with permissions
+            ticket_channel = await guild.create_text_channel(
+                name=ticket_channel_name,
+                category=category,
                 overwrites=modal.overwrites,
-                category=category_channel,
-                topic=metadata.to_topic(),
                 reason=f"Ticket created by {interaction.user}"
             )
-        except discord.Forbidden:
+            
+            # Create ticket metadata
+            metadata = TicketMetadata(
+                ticket_id=ticket_id,
+                user_id=interaction.user.id,
+                category=modal.category,
+                guild_id=guild.id,
+                channel_id=ticket_channel.id,
+                created_at=datetime.now().isoformat(),
+                last_activity=datetime.now().isoformat()
+            )
+            
+            # Save ticket to database
+            if not await metadata.save():
+                logger.error("Failed to save ticket to database")
+                await ticket_channel.delete(reason="Failed to save ticket data")
+                await interaction.followup.send(
+                    "An error occurred while creating the ticket. Please try again.",
+                    ephemeral=True
+                )
+                return None
+            
+            # Set the channel topic to the ticket ID for reference
+            await ticket_channel.edit(topic=metadata.to_topic())
+            
+            # Create initial message with ticket info
+            embed = discord.Embed(
+                title=f"Ticket: {modal.category}",
+                description=(
+                    f"Thank you for creating a ticket, {interaction.user.mention}!\n"
+                    f"A staff member will be with you shortly.\n\n"
+                    f"**Ticket ID:** `{ticket_id}`\n"
+                    f"**Category:** {modal.category}\n"
+                    f"**Status:** Open\n"
+                    f"**Created:** <t:{int(datetime.now().timestamp())}:R>"
+                ),
+                color=discord.Color.blue()
+            )
+            
+            # Add form data to embed if any
+            if hasattr(modal, 'form_data') and modal.form_data:
+                form_text = "\n".join([f"**{k}:** {v}" for k, v in modal.form_data.items()])
+                embed.add_field(name="Details", value=form_text, inline=False)
+            
+            # Add controls
+            controls = TicketControlsView(ticket_id)
+            
+            # Create ticket channel
+            guild = interaction.guild
+            ticket_channel_name = f"ticket-{ticket_id[:8]}"
+                
+            # Get the category
+            category = guild.get_channel(int(category_id))
+            if not category:
+                await interaction.followup.send(
+                    "Ticket category not found. Please contact an admin.",
+                    ephemeral=True
+                )
+                return None
+                
+            # Create the ticket channel with permissions
+            ticket_channel = await guild.create_text_channel(
+                name=ticket_channel_name,
+                category=category,
+                overwrites=modal.overwrites,
+                reason=f"Ticket created by {interaction.user}"
+            )
+                
+            # Create ticket metadata
+            metadata = {
+                'ticket_id': ticket_id,
+                'user_id': interaction.user.id,
+                'category': modal.category,
+                'guild_id': guild.id,
+                'channel_id': ticket_channel.id,
+                'created_at': datetime.utcnow().isoformat(),
+                'last_activity': datetime.utcnow().isoformat(),
+                'status': 'open',
+                'priority': 'normal'
+            }
+            
+            # Save ticket to Supabase
+            try:
+                result = supabase.table('tickets').insert(metadata).execute()
+                if not result.data:
+                    raise Exception("No data returned from Supabase")
+            except Exception as e:
+                logger.error(f"Failed to save ticket to Supabase: {e}")
+                try:
+                    await ticket_channel.delete(reason="Failed to save ticket data")
+                except Exception as delete_error:
+                    logger.error(f"Failed to delete channel after save error: {delete_error}")
+                
+                await interaction.followup.send(
+                    "An error occurred while creating the ticket. Please try again.",
+                    ephemeral=True
+                )
+                return None
+            
+            # Set the channel topic to the ticket ID for reference
+            await ticket_channel.edit(topic=f"ticket:{ticket_id}")
+                
+            # Create initial message with ticket info
+            embed = discord.Embed(
+                title=f"Ticket: {modal.category}",
+                description=(
+                    f"Thank you for creating a ticket, {interaction.user.mention}!\n"
+                    f"A staff member will be with you shortly.\n\n"
+                    f"**Ticket ID:** `{ticket_id}`\n"
+                    f"**Category:** {modal.category}\n"
+                    f"**Status:** Open\n"
+                    f"**Created:** <t:{int(datetime.utcnow().timestamp())}:R>"
+                ),
+                color=discord.Color.blue(),
+                timestamp=datetime.utcnow()
+            )
+                
+            # Add form data to embed if any
+            if hasattr(modal, 'form_data') and modal.form_data:
+                form_text = "\n".join([f"**{k}:** {v}" for k, v in modal.form_data.items()])
+                embed.add_field(name="Details", value=form_text, inline=False)
+                
+            # Add controls
+            controls = TicketControlsView(ticket_id)
+                
+            # Send the initial message
+            await ticket_channel.send(embed=embed, view=controls)
+                
+            # Send confirmation to user (ephemeral)
             await interaction.followup.send(
-                "I don't have permission to create channels!", 
+                f"Your ticket has been created: {ticket_channel.mention}",
                 ephemeral=True
             )
-            return None
-        except discord.HTTPException as e:
-            await interaction.followup.send(
-                f"Failed to create ticket channel: {str(e)}", 
-                ephemeral=True
-            )
+            
+            # Log ticket creation
+            log_channel_id = config.get('log_channel_id')
+            if log_channel_id:
+                try:
+                    log_channel = guild.get_channel(int(log_channel_id))
+                    if log_channel:
+                        log_embed = discord.Embed(
+                            title="🎫 Ticket Created",
+                            description=(
+                                f"**Ticket ID:** `{ticket_id}`\n"
+                                f"**User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                                f"**Category:** {modal.category}\n"
+                                f"**Channel:** {ticket_channel.mention}"
+                            ),
+                            color=discord.Color.green(),
+                            timestamp=datetime.utcnow()
+                        )
+                        log_embed.set_footer(text=f"User ID: {interaction.user.id}")
+                        
+                        # Add form data to log if it exists
+                        if hasattr(modal, 'form_data') and modal.form_data:
+                            form_text = "\n".join([f"**{k}:** {v}" for k, v in modal.form_data.items()])
+                            log_embed.add_field(name="Form Data", value=form_text, inline=False)
+                        
+                        # Send as a webhook if configured for better formatting
+                        webhook_url = config.get('log_webhook_url')
+                        if webhook_url:
+                            try:
+                                webhook = discord.SyncWebhook.from_url(webhook_url)
+                                webhook.send(embed=log_embed, username=f"Ticket System - {guild.name}")
+                            except Exception as e:
+                                logger.error(f"Failed to send webhook log: {e}")
+                                await log_channel.send(embed=log_embed)
+                        else:
+                            await log_channel.send(embed=log_embed)
+                except Exception as e:
+                    logger.error(f"Error logging ticket creation: {e}")
+                    # Continue with ticket creation even if logging fails
+        
+            return ticket_channel
+            
+        except discord.Forbidden as e:
+            logger.error(f"Bot lacks permissions to create ticket channel: {e}")
+            try:
+                await interaction.followup.send(
+                    "I don't have permission to create channels in this server. "
+                    "Please check my permissions and try again.",
+                    ephemeral=True
+                )
+            except Exception as send_error:
+                logger.error(f"Failed to send error message: {send_error}")
             return None
             
-        return channel, metadata
-        
-                log_embed.add_field(name="User", 
-                                 value=f"{interaction.user.mention} ({interaction.user.id})", 
-                                 inline=True)
-                log_embed.add_field(name="Category", value=category, inline=True)
-                log_embed.add_field(name="Channel", value=channel.mention, inline=True)
-                log_embed.timestamp = datetime.utcnow()
-                await log_channel.send(embed=log_embed)
+        except discord.HTTPException as e:
+            logger.error(f"Discord HTTP error creating ticket: {e}")
+            try:
+                await interaction.followup.send(
+                    "An error occurred while creating the ticket. Please try again later.",
+                    ephemeral=True
+                )
+            except Exception as send_error:
+                logger.error(f"Failed to send error message: {send_error}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Unexpected error in create_ticket_channel: {e}", exc_info=True)
+            try:
+                await interaction.followup.send(
+                    "An unexpected error occurred. Please try again or contact an admin.",
+                    ephemeral=True
+                )
+            except Exception as send_error:
+                logger.error(f"Failed to send error message: {send_error}")
+            return None
 
-        # Log ticket creation
-        logger.info(
-            f"Ticket #{ticket_id} created by {interaction.user} "
-            f"(ID: {interaction.user.id}) in category {category}"
-        )
+async def log_ticket_creation(self, interaction, ticket_id, category, channel):
+    """Log ticket creation to the configured log channel"""
+    config = load_data('config')
+    if not config.get("ticket_log_channel"):
+        return
 
-    async def log_ticket_creation(self, interaction, ticket_id, category, channel):
-        """Log ticket creation to the configured log channel"""
-        config = load_data('config')
-        if not config.get("ticket_log_channel"):
+    try:
+        log_channel = interaction.guild.get_channel(int(config["ticket_log_channel"]))
+        if not log_channel:
             return
 
-        try:
-            log_channel = interaction.guild.get_channel(int(config["ticket_log_channel"]))
-            if not log_channel:
-                return
+        log_embed = discord.Embed(
+            title=f"Ticket #{ticket_number} Created",
+            description=f"A new ticket has been created",
+            color=discord.Color.green(),
+            timestamp=datetime.now()
+        )
+        log_embed.add_field(name="User", value=f"{interaction.user.mention} ({interaction.user.name})", inline=True)
+        log_embed.add_field(name="Category", value=category, inline=True)
+        log_embed.add_field(name="Channel", value=channel.mention, inline=True)
+        log_embed.set_footer(text=f"User ID: {interaction.user.id}")
 
-            log_embed = discord.Embed(
-                title=f"Ticket #{ticket_number} Created",
-                description=f"A new ticket has been created",
-                color=discord.Color.green(),
-                timestamp=datetime.now()
-            )
-            log_embed.add_field(name="User", value=f"{interaction.user.mention} ({interaction.user.name})", inline=True)
-            log_embed.add_field(name="Category", value=category, inline=True)
-            log_embed.add_field(name="Channel", value=channel.mention, inline=True)
-            log_embed.set_footer(text=f"User ID: {interaction.user.id}")
-
-            await log_channel.send(embed=log_embed)
-        except Exception as e:
-            logger.error(f"Failed to log ticket creation: {e}")
+        await log_channel.send(embed=log_embed)
+    except Exception as e:
+        logger.error(f"Failed to log ticket creation: {e}")
 
 
 class AssignTicketButton(discord.ui.Button):
@@ -1430,19 +1679,74 @@ class PrioritySelect(discord.ui.Select):
     
     async def generate_transcript(self, channel: discord.TextChannel, metadata: dict) -> str:
         """Generate a text transcript of the ticket."""
-        # Fetch messages (newest first, then we'll reverse)
+        # Format transcript header with metadata
+        transcript = f"""
+        {'='*60}
+        TICKET TRANSCRIPT - {metadata.get('ticket_id', 'UNKNOWN')}
+        {'='*60}
+        
+        TICKET INFORMATION:
+        {'-'*60}
+        Ticket ID:    {metadata.get('ticket_id', 'N/A')}
+        Category:     {metadata.get('category', 'N/A')}
+        Status:       {metadata.get('status', 'N/A').upper()}
+        Created:      {metadata.get('created_at', 'N/A')}
+        Created By:   {metadata.get('user_id', 'N/A')}
+        Assigned To:  {metadata.get('assigned_to', 'Unassigned')}
+        Priority:     {metadata.get('priority', 'Normal').capitalize()}
+        
+        CLOSURE INFORMATION:
+        {'-'*60}
+        Closed:       {metadata.get('closed_at', 'N/A')}
+        Closed By:    {metadata.get('closed_by', 'N/A')}
+        Close Type:   {metadata.get('close_type', 'N/A').capitalize() if metadata.get('close_type') else 'N/A'}
+        Close Reason: {metadata.get('close_reason', 'No reason provided')}
+        
+        MESSAGES:
+        {'-'*60}
+        """
+        
+        # Fetch and format messages
         messages = []
-        async for message in channel.history(limit=1000, oldest_first=True):
-            if not message.author.bot or (message.author.bot and message.embeds):
-                messages.append(message)
+        try:
+            async for message in channel.history(limit=1000, oldest_first=True):
+                # Skip system messages and empty messages
+                if message.type != discord.MessageType.default or not message.content and not message.attachments and not message.embeds:
+                    continue
+                    
+                # Format message timestamp
+                timestamp = message.created_at.strftime('%Y-%m-%d %H:%M:%S')
+                author = f"{message.author.name}#{message.author.discriminator}"
+                
+                # Format message content
+                content = message.clean_content.replace('\n', '\n                    ')
+                
+                # Add attachment info if present
+                if message.attachments:
+                    attachments = ' '.join(f'[Attachment: {a.filename}]' for a in message.attachments)
+                    content = f"{content} {attachments}".strip()
+                
+                # Add embed info if present
+                if message.embeds:
+                    embed_count = len(message.embeds)
+                    content = f"{content} [Embed: {embed_count} embed{'s' if embed_count > 1 else ''}]".strip()
+                
+                # Format the message line
+                msg_line = f"[{timestamp}] {author}: {content}"
+                messages.append(msg_line)
+                
+        except Exception as e:
+            logger.error(f"Error fetching messages for transcript: {e}")
+            transcript += "\n[Error: Could not fetch all messages for transcript]\n"
         
-        # Format transcript header
-        transcript = f"Ticket Transcript - #{metadata['ticket_id']}\n"
-        transcript += "=" * 50 + "\n\n"
+        # Add messages to transcript
+        transcript += '\n'.join(messages)
+        transcript += f"\n\n{'='*60}\nEND OF TRANSCRIPT\n{'='*60}"
         
-        # Add ticket metadata
-        transcript += f"Ticket ID: {metadata['ticket_id']}\n"
-        transcript += f"Category: {metadata['category']}\n"
+        # Clean up any excessive whitespace
+        transcript = '\n'.join(line.strip() for line in transcript.split('\n') if line.strip())
+        
+        return transcript
         creator = channel.guild.get_member(metadata['user_id'])
         transcript += f"Creator: {creator} (ID: {metadata['user_id']}) \n"
         
@@ -1827,8 +2131,287 @@ class CloseTicketModal(discord.ui.Modal):
         return transcript
 
 
+class Tickets(commands.Cog):
+    """Ticket system for handling user support tickets."""
+    
+    def __init__(self, bot):
+        self.bot = bot
+        self.config = load_config()
+        self.active_tickets = {}
+        self.setup_handlers()
+    
+    def setup_handlers(self):
+        """Setup event handlers for ticket interactions."""
+        self.bot.add_listener(self.on_message, 'on_message')
+    
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Called when the cog is loaded and ready."""
+        logger.info("Ticket system is ready!")
+    
+    @app_commands.command(name="ticketsetup", description="Set up the ticket system")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def ticket_setup(self, interaction: discord.Interaction):
+        """Set up the ticket system in the current channel."""
+        embed = discord.Embed(
+            title="🎫 Support Tickets",
+            description="Click the button below to create a new support ticket.",
+            color=discord.Color.blue()
+        )
+        
+        view = TicketView()
+        await interaction.response.send_message(embed=embed, view=view)
+    
+    @app_commands.command(name="ticket", description="Create a new support ticket")
+    async def create_ticket(self, interaction: discord.Interaction, category: str, description: str):
+        """Create a new support ticket."""
+        await interaction.response.defer(ephemeral=True)
+        
+        # Create ticket channel
+        guild = interaction.guild
+        ticket_id = str(uuid.uuid4())[:8].upper()
+        
+        # Get or create ticket category
+        category_id = self.config.get("ticket_category")
+        if category_id:
+            category = guild.get_channel(int(category_id))
+        else:
+            # Create a new category if not set
+            category = await guild.create_category("Tickets")
+            self.config["ticket_category"] = str(category.id)
+            save_config(self.config)
+        
+        # Create ticket channel
+        channel = await guild.create_text_channel(
+            f"ticket-{ticket_id}",
+            category=category,
+            topic=f"ticket_{ticket_id}",
+            reason=f"Ticket created by {interaction.user}"
+        )
+        
+        # Set permissions
+        await channel.set_permissions(interaction.user, read_messages=True, send_messages=True)
+        
+        # Create ticket metadata
+        metadata = {
+            'ticket_id': ticket_id,
+            'status': 'open',
+            'priority': 'normal',
+            'category': category,
+            'created_by': interaction.user.id,
+            'created_at': datetime.now().isoformat(),
+            'last_activity': datetime.now().isoformat(),
+            'assigned_to': None,
+            'assigned_at': None,
+            'assigned_by': None
+        }
+        
+        # Create metadata message
+        metadata_embed = discord.Embed(
+            title="📝 Ticket Metadata",
+            description=f"```json\n{json.dumps(metadata, indent=2)}\n```",
+            color=discord.Color.blue()
+        )
+        metadata_msg = await channel.send(embed=metadata_embed)
+        
+        # Update channel topic with metadata message ID
+        await channel.edit(topic=f"ticket_{ticket_id}_{metadata_msg.id}")
+        
+        # Create main ticket message
+        embed = discord.Embed(
+            title=f"🎫 Ticket #{ticket_id} - {category}",
+            description=(
+                f"**Status:** 🟢 Open\n"
+                f"**Priority:** 🟡 Normal\n"
+                f"**Created by:** {interaction.user.mention}\n"
+                f"**Category:** {category}\n\n"
+                f"**Description:**\n{description}"
+            ),
+            color=discord.Color.green()
+        )
+        
+        # Add control buttons
+        view = TicketControlsView(ticket_id)
+        control_msg = await channel.send(embed=embed, view=view)
+        
+        # Update metadata with control message ID
+        metadata['control_message_id'] = control_msg.id
+        metadata_embed.description = f"```json\n{json.dumps(metadata, indent=2)}\n```"
+        await metadata_msg.edit(embed=metadata_embed)
+        
+        # Send welcome message
+        welcome_embed = discord.Embed(
+            title="🎫 Ticket Created",
+            description=(
+                f"Thank you for creating a ticket, {interaction.user.mention}!\n"
+                "A staff member will assist you shortly.\n\n"
+                "**Quick Actions:**\n"
+                "• Use the buttons above to manage this ticket\n"
+                "• Add more details by replying in this channel\n"
+                "• Close this ticket when your issue is resolved"
+            ),
+            color=discord.Color.green()
+        )
+        
+        # Get support role mention if configured
+        support_mention = ""
+        support_role_id = self.config.get("support_role_id")
+        if support_role_id:
+            support_role = interaction.guild.get_role(int(support_role_id))
+            if support_role:
+                support_mention = f"{support_role.mention} "
+        
+        # Send mention and welcome message
+        await channel.send(f"{support_mention}• {interaction.user.mention} has created a new ticket!")
+        await channel.send(embed=welcome_embed)
+        
+        # Send confirmation to user
+        await interaction.followup.send(
+            f"✅ Ticket created: {channel.mention}",
+            ephemeral=True
+        )
+    
+    @app_commands.command(name="closeticket", description="Close the current ticket")
+    async def close_ticket(self, interaction: discord.Interaction, reason: str):
+        """Close the current ticket."""
+        # Check if this is a ticket channel
+        if not interaction.channel.topic or not interaction.channel.topic.startswith("ticket_"):
+            await interaction.response.send_message("❌ This is not a ticket channel.", ephemeral=True)
+            return
+        
+        # Get ticket ID from channel topic
+        ticket_id = interaction.channel.topic.split('_')[1]
+        
+        # Create close confirmation view
+        view = TicketCloseConfirmView(ticket_id, reason, interaction.user.id)
+        
+        # Send confirmation message
+        embed = discord.Embed(
+            title="🔒 Close Ticket",
+            description=(
+                f"You are about to close this ticket.\n"
+                f"**Reason:** {reason}\n\n"
+                f"Please confirm this action."
+            ),
+            color=discord.Color.orange()
+        )
+        
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    
+    @app_commands.command(name="adduser", description="Add a user to the ticket")
+    async def add_user(self, interaction: discord.Interaction, user: discord.Member):
+        """Add a user to the current ticket."""
+        # Check if this is a ticket channel
+        if not interaction.channel.topic or not interaction.channel.topic.startswith("ticket_"):
+            await interaction.response.send_message("❌ This is not a ticket channel.", ephemeral=True)
+            return
+        
+        # Add user to the channel
+        await interaction.channel.set_permissions(user, read_messages=True, send_messages=True)
+        await interaction.response.send_message(f"✅ Added {user.mention} to the ticket.")
+    
+    @app_commands.command(name="removeuser", description="Remove a user from the ticket")
+    async def remove_user(self, interaction: discord.Interaction, user: discord.Member):
+        """Remove a user from the current ticket."""
+        # Check if this is a ticket channel
+        if not interaction.channel.topic or not interaction.channel.topic.startswith("ticket_"):
+            await interaction.response.send_message("❌ This is not a ticket channel.", ephemeral=True)
+            return
+        
+        # Remove user from the channel
+        await interaction.channel.set_permissions(user, overwrite=None)
+        await interaction.response.send_message(f"✅ Removed {user.mention} from the ticket.")
+    
+    @app_commands.command(name="rename", description="Rename the current ticket")
+    async def rename_ticket(self, interaction: discord.Interaction, name: str):
+        """Rename the current ticket channel."""
+        # Check if this is a ticket channel
+        if not interaction.channel.topic or not interaction.channel.topic.startswith("ticket_"):
+            await interaction.response.send_message("❌ This is not a ticket channel.", ephemeral=True)
+            return
+        
+        # Rename the channel
+        await interaction.channel.edit(name=name)
+        await interaction.response.send_message(f"✅ Ticket renamed to `{name}`.")
+    
+    @app_commands.command(name="transcript", description="Generate a transcript of the ticket")
+    async def generate_transcript(self, interaction: discord.Interaction):
+        """Generate a transcript of the current ticket."""
+        # Check if this is a ticket channel
+        if not interaction.channel.topic or not interaction.channel.topic.startswith("ticket_"):
+            await interaction.response.send_message("❌ This is not a ticket channel.", ephemeral=True)
+            return
+        
+        # Defer the response as this might take a while
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # Generate the transcript
+            transcript = await self.generate_transcript(interaction.channel)
+            
+            # Send the transcript as a file
+            file = discord.File(io.BytesIO(transcript.encode('utf-8')), filename=f"transcript-{interaction.channel.name}.txt")
+            await interaction.followup.send("Here's the transcript:", file=file, ephemeral=True)
+        except Exception as e:
+            logger.error(f"Error generating transcript: {e}")
+            await interaction.followup.send("❌ Failed to generate transcript.", ephemeral=True)
+    
+    async def generate_transcript(self, channel: discord.TextChannel) -> str:
+        """Generate a text transcript of the channel messages."""
+        transcript = []
+        
+        # Add channel info
+        transcript.append(f"Transcript of #{channel.name}")
+        transcript.append(f"Created: {channel.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        
+        # Fetch all messages
+        async for message in channel.history(limit=None, oldest_first=True):
+            # Skip system messages
+            if message.is_system():
+                continue
+                
+            # Format message
+            timestamp = message.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            author = f"{message.author.name}#{message.author.discriminator}"
+            content = message.clean_content
+            
+            # Handle attachments
+            if message.attachments:
+                attachments = ' '.join([f'[Attachment: {a.filename}]' for a in message.attachments])
+                content = f"{content} {attachments}".strip()
+            
+            # Add to transcript
+            transcript.append(f"[{timestamp}] {author}: {content}")
+        
+        return '\n'.join(transcript)
+    
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Handle messages in ticket channels."""
+        # Ignore messages from bots
+        if message.author.bot:
+            return
+        
+        # Check if this is a ticket channel
+        if not message.channel.topic or not message.channel.topic.startswith("ticket_"):
+            return
+        
+        try:
+            # Get ticket metadata
+            metadata = await self.get_ticket_metadata(message.channel)
+            if not metadata:
+                return
+            
+            # Update last activity
+            metadata['last_activity'] = datetime.now().isoformat()
+            await self.update_ticket_metadata(message.channel, metadata)
+            
+        except Exception as e:
+            logger.error(f"Error processing message in ticket channel: {e}")
+
+
 class TicketCloseConfirmView(discord.ui.View):
-    """View for confirming or denying ticket closure."""
+    """View for confirming or denying ticket closure with user confirmation."""
     
     def __init__(self, ticket_id: str, reason: str, closer_id: int):
         super().__init__(timeout=3600)  # 1 hour timeout
@@ -1853,57 +2436,76 @@ class TicketCloseConfirmView(discord.ui.View):
             return True
         return False
 
-    @discord.ui.button(label="Confirm Close", style=discord.ButtonStyle.green, custom_id="confirm_close")
+    @discord.ui.button(label="✅ Yes, Close Ticket", style=discord.ButtonStyle.green, custom_id="confirm_close", emoji="✅")
     async def confirm_close(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Handle confirm close button click."""
         await interaction.response.defer(ephemeral=True)
         metadata = await self.get_ticket_metadata(interaction.channel)
         if not metadata:
-            await interaction.followup.send("This ticket is invalid!", ephemeral=True)
+            await interaction.followup.send("❌ This ticket is invalid or has already been closed.", ephemeral=True)
             return
 
         if not await self.has_permission(interaction, metadata):
-            await interaction.followup.send("You don't have permission to close this ticket!", ephemeral=True)
+            await interaction.followup.send("❌ You don't have permission to close this ticket!", ephemeral=True)
             return
+
+        # Update the confirmation message
+        embed = interaction.message.embeds[0]
+        embed.title = f"🔒 Closing Ticket #{self.ticket_id}"
+        embed.description = "Closing ticket and generating transcript..."
+        embed.color = discord.Color.green()
+        for child in self.children:
+            child.disabled = True
+        await interaction.followup.edit_message(interaction.message.id, embed=embed, view=self)
 
         await self.close_ticket(interaction, metadata, "confirmed by user")
 
-    @discord.ui.button(label="Deny Close", style=discord.ButtonStyle.red, custom_id="deny_close")
+    @discord.ui.button(label="❌ No, Keep Open", style=discord.ButtonStyle.red, custom_id="deny_close", emoji="❌")
     async def deny_close(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Handle deny close button click."""
         metadata = await self.get_ticket_metadata(interaction.channel)
         if not metadata:
-            await interaction.response.send_message("This ticket is invalid!", ephemeral=True)
+            await interaction.response.send_message("❌ This ticket is invalid or has already been closed.", ephemeral=True)
             return
 
         if not await self.has_permission(interaction, metadata):
-            await interaction.response.send_message("You don't have permission to deny this action!", ephemeral=True)
+            await interaction.response.send_message("❌ You don't have permission to manage this ticket!", ephemeral=True)
             return
 
         # Disable buttons and update embed to show denial
         embed = interaction.message.embeds[0]
-        embed.title = f"Ticket #{self.ticket_id} Close Request Denied"
-        embed.description = f"The request to close this ticket was denied by {interaction.user.mention}."
-        embed.color = discord.Color.red()
+        embed.title = f"✅ Ticket #{self.ticket_id} - Close Cancelled"
+        embed.description = f"{interaction.user.mention} chose to keep this ticket open."
+        embed.color = discord.Color.blue()
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(embed=embed, view=self)
-        logger.info(f"Ticket #{self.ticket_id} close request denied by {interaction.user.name}")
+        logger.info(f"Ticket #{self.ticket_id} close cancelled by {interaction.user.name}")
 
-    @discord.ui.button(label="Force Close", style=discord.ButtonStyle.danger, custom_id="force_close")
+    @discord.ui.button(label="⚠️ Force Close (Staff Only)", style=discord.ButtonStyle.danger, custom_id="force_close", emoji="⚠️")
     async def force_close(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Handle force close button click (admin only)."""
         await interaction.response.defer(ephemeral=True)
+        
         if not await is_admin(interaction):
-            await interaction.followup.send("You don't have permission to force-close tickets!", ephemeral=True)
+            await interaction.followup.send("❌ Only staff members can force-close tickets.", ephemeral=True)
             return
 
         metadata = await self.get_ticket_metadata(interaction.channel)
         if not metadata:
-            await interaction.followup.send("This ticket is invalid!", ephemeral=True)
+            await interaction.followup.send("❌ This ticket is invalid or has already been closed.", ephemeral=True)
             return
 
-        await self.close_ticket(interaction, metadata, "force-closed by admin")
+        # Update the confirmation message
+        embed = interaction.message.embeds[0]
+        embed.title = f"🔒 Force-Closing Ticket #{self.ticket_id}"
+        embed.description = "Force-closing ticket and generating transcript..."
+        embed.color = discord.Color.red()
+        for child in self.children:
+            child.disabled = True
+        await interaction.followup.edit_message(interaction.message.id, embed=embed, view=self)
+
+        await self.close_ticket(interaction, metadata, "force-closed by staff")
 
     async def close_ticket(self, interaction: discord.Interaction, metadata: dict, close_type: str):
         """Close the ticket and perform cleanup."""
@@ -2609,4 +3211,9 @@ class CloseAllTicketsView(discord.ui.View):
 
 
 async def setup(bot):
+    """
+    The setup function to add this cog to the bot.
+    This function is called when the cog is loaded.
+    """
     await bot.add_cog(Tickets(bot))
+    logger.info("Tickets cog loaded successfully!")

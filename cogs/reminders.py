@@ -3,23 +3,15 @@ from discord import app_commands
 from discord.ext import commands
 import json
 import asyncio
+import uuid
 from datetime import datetime, timedelta
-
-
-# Load data
-def load_data(file):
-    with open(f'data/{file}.json', 'r') as f:
-        return json.load(f)
-
-
-def save_data(file, data):
-    with open(f'data/{file}.json', 'w') as f:
-        json.dump(data, f, indent=4)
+from supabase_client import get_db
 
 
 class Reminders(commands.Cog):  # Changed from 'Polls' to 'Reminders'
     def __init__(self, bot):
         self.bot = bot
+        self.db = get_db()
         self.reminder_task = self.bot.loop.create_task(self.check_reminders())
 
     def cog_unload(self):
@@ -30,24 +22,29 @@ class Reminders(commands.Cog):  # Changed from 'Polls' to 'Reminders'
 
         while not self.bot.is_closed():
             try:
-                reminders = load_data('reminders')
+                # Get pending reminders from Supabase
+                result = self.db.client.table('reminders') \
+                    .select('*') \
+                    .eq('status', 'pending') \
+                    .lte('reminder_time', datetime.now().isoformat()) \
+                    .execute()
+                
                 now = datetime.now()
 
-                # Check for reminders that need to be sent
-                to_remove = []
-                for i, reminder in enumerate(reminders):
-                    reminder_time = datetime.fromisoformat(reminder["time"])
+                # Process reminders that need to be sent
+                for reminder in result.data:
+                    reminder_time = datetime.fromisoformat(reminder["reminder_time"])
 
                     if reminder_time <= now:
                         # Send the reminder
                         await self.send_reminder(reminder)
-                        to_remove.append(i)
+                        
+                        # Mark as completed
+                        self.db.client.table('reminders') \
+                            .update({'status': 'completed'}) \
+                            .eq('reminder_id', reminder['reminder_id']) \
+                            .execute()
 
-                # Remove sent reminders
-                for i in sorted(to_remove, reverse=True):
-                    reminders.pop(i)
-
-                save_data('reminders', reminders)
             except Exception as e:
                 print(f"Error checking reminders: {e}")
 
@@ -119,19 +116,20 @@ class Reminders(commands.Cog):  # Changed from 'Polls' to 'Reminders'
 
         # Create reminder
         reminder = {
+            "reminder_id": str(uuid.uuid4()),
             "user_id": interaction.user.id,
+            "guild_id": interaction.guild.id if interaction.guild else 0,
             "message": message,
-            "time": reminder_time.isoformat(),
-            "created_at": datetime.now().isoformat()
+            "reminder_time": reminder_time.isoformat(),
+            "created_at": datetime.now().isoformat(),
+            "status": "pending"
         }
 
         if channel:
             reminder["channel_id"] = interaction.channel.id
 
-        # Save reminder
-        reminders = load_data('reminders')
-        reminders.append(reminder)
-        save_data('reminders', reminders)
+        # Save reminder to Supabase
+        self.db.client.table('reminders').insert(reminder).execute()
 
         # Format time for display
         time_parts = []
@@ -171,10 +169,14 @@ class Reminders(commands.Cog):  # Changed from 'Polls' to 'Reminders'
 
     @app_commands.command(name="reminders", description="List your active reminders")
     async def list_reminders(self, interaction):
-        reminders = load_data('reminders')
+        # Get user's pending reminders from Supabase
+        result = self.db.client.table('reminders') \
+            .select('*') \
+            .eq('user_id', interaction.user.id) \
+            .eq('status', 'pending') \
+            .execute()
 
-        # Filter reminders for this user
-        user_reminders = [r for r in reminders if r["user_id"] == interaction.user.id]
+        user_reminders = result.data
 
         if not user_reminders:
             await interaction.response.send_message("You don't have any active reminders!", ephemeral=True)
@@ -189,7 +191,7 @@ class Reminders(commands.Cog):  # Changed from 'Polls' to 'Reminders'
 
         # Add fields for each reminder
         for i, reminder in enumerate(user_reminders):
-            reminder_time = datetime.fromisoformat(reminder["time"])
+            reminder_time = datetime.fromisoformat(reminder["reminder_time"])
             time_left = reminder_time - datetime.now()
 
             if time_left.total_seconds() <= 0:
@@ -222,10 +224,14 @@ class Reminders(commands.Cog):  # Changed from 'Polls' to 'Reminders'
     @app_commands.command(name="cancelreminder", description="Cancel a reminder")
     @app_commands.describe(index="The reminder number (from /reminders list)")
     async def cancel_reminder(self, interaction, index: int):
-        reminders = load_data('reminders')
+        # Get user's pending reminders from Supabase
+        result = self.db.client.table('reminders') \
+            .select('*') \
+            .eq('user_id', interaction.user.id) \
+            .eq('status', 'pending') \
+            .execute()
 
-        # Filter reminders for this user
-        user_reminders = [r for r in reminders if r["user_id"] == interaction.user.id]
+        user_reminders = result.data
 
         if not user_reminders:
             await interaction.response.send_message("You don't have any active reminders!", ephemeral=True)
@@ -239,9 +245,11 @@ class Reminders(commands.Cog):  # Changed from 'Polls' to 'Reminders'
         # Get the reminder to cancel
         target_reminder = user_reminders[index - 1]
 
-        # Remove from the list
-        reminders.remove(target_reminder)
-        save_data('reminders', reminders)
+        # Remove from database
+        self.db.client.table('reminders') \
+            .delete() \
+            .eq('reminder_id', target_reminder['reminder_id']) \
+            .execute()
 
         # Send confirmation
         embed = discord.Embed(
