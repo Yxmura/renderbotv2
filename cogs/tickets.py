@@ -72,7 +72,11 @@ async def create_metadata_message(channel: discord.TextChannel, metadata: dict):
 
 # Base form modal for ticket creation
 class TicketFormModal(discord.ui.Modal):    
-    def __init__(self, category: str, *args, **kwargs):
+    def __init__(self, category: str = None, *args, **kwargs):
+        # Get category from kwargs if not provided as positional arg
+        if category is None:
+            category = kwargs.pop('category', 'Ticket')
+            
         super().__init__(title=f"{category} - Ticket Details", *args, **kwargs)
         self.category = category
         self.form_data = {}
@@ -137,7 +141,8 @@ class TicketFormModal(discord.ui.Modal):
 
 class ResourceIssueModal(TicketFormModal):
     def __init__(self, *args, **kwargs):
-        super().__init__("Resource Issue", *args, **kwargs)
+        kwargs['category'] = 'Resource Issue'
+        super().__init__(*args, **kwargs)
         
         self.resource_title = discord.ui.TextInput(
             label="Resource Title (Optional)",
@@ -169,7 +174,8 @@ class ResourceIssueModal(TicketFormModal):
 
 class PartnerSponsorModal(TicketFormModal):
     def __init__(self, *args, **kwargs):
-        super().__init__("Partner/Sponsor Inquiry", *args, **kwargs)
+        kwargs['category'] = 'Partner/Sponsor Inquiry'
+        super().__init__(*args, **kwargs)
         
         self.organization = discord.ui.TextInput(
             label="Organization/Channel Name",
@@ -210,7 +216,8 @@ class PartnerSponsorModal(TicketFormModal):
 
 class StaffApplicationModal(TicketFormModal):
     def __init__(self, *args, **kwargs):
-        super().__init__("Staff Application", *args, **kwargs)
+        kwargs['category'] = 'Staff Application'
+        super().__init__(*args, **kwargs)
         
         self.name = discord.ui.TextInput(
             label="Full Name",
@@ -269,7 +276,8 @@ class StaffApplicationModal(TicketFormModal):
 
 class ContentCreatorModal(TicketFormModal):
     def __init__(self, *args, **kwargs):
-        super().__init__("Content Creator Application", *args, **kwargs)
+        kwargs['category'] = 'Content Creator Application'
+        super().__init__(*args, **kwargs)
         
         self.channel_name = discord.ui.TextInput(
             label="Channel Name",
@@ -331,7 +339,8 @@ class ContentCreatorModal(TicketFormModal):
 
 class OtherInquiryModal(TicketFormModal):
     def __init__(self, *args, **kwargs):
-        super().__init__("Other Inquiry", *args, **kwargs)
+        kwargs['category'] = 'Other Inquiry'
+        super().__init__(*args, **kwargs)
         
         self.subject = discord.ui.TextInput(
             label="Subject",
