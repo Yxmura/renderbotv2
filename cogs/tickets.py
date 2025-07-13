@@ -73,14 +73,19 @@ async def create_metadata_message(channel: discord.TextChannel, metadata: dict):
 # Base form modal for ticket creation
 class TicketFormModal(discord.ui.Modal):    
     def __init__(self, category: str = None, *args, **kwargs):
+        # Extract custom arguments before passing to parent
+        self.ticket_id = kwargs.pop('ticket_id', None)
+        self.guild = kwargs.pop('guild', None)
+        self.interaction = kwargs.pop('interaction', None)
+        
         # Get category from kwargs if not provided as positional arg
         if category is None:
             category = kwargs.pop('category', 'Ticket')
-            
-        super().__init__(title=f"{category} - Ticket Details", *args, **kwargs)
         self.category = category
+        
+        # Only pass expected arguments to parent class
+        super().__init__(title=f"{category} - Ticket Details")
         self.form_data = {}
-        self.ticket_id = kwargs.pop('ticket_id', None)  # Get ticket_id from kwargs if provided
     
     async def on_submit(self, interaction: discord.Interaction):
         # Store the form data
