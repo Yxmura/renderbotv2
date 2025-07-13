@@ -409,26 +409,42 @@ class TicketMetadata:
     @classmethod
     async def from_topic(cls, topic: Optional[str]) -> Optional['TicketMetadata']:
         """Create TicketMetadata from channel topic (ticket ID)."""
-        if not topic or topic.strip() == "":
+        if not topic or not isinstance(topic, str) or topic.strip() == "":
+            logger.debug(f"Empty or invalid topic provided: {repr(topic)}")
             return None
             
         ticket_id = topic.strip()
         
         # Skip lookup if the topic doesn't look like a valid ticket ID
         if not cls.is_valid_ticket_id(ticket_id):
-            logger.warning(f"Invalid ticket ID format in topic: {repr(ticket_id)}")
-            return None
+            # Check if this might be an old-style topic that includes the ticket ID
+            if 'ticket_' in ticket_id:
+                # Try to extract a valid ticket ID from the old format
+                import re
+                match = re.search(r'ticket_([a-z0-9]+)', ticket_id)
+                if match:
+                    ticket_id = match.group(1)
+                    logger.info(f"Extracted ticket ID from old topic format: {ticket_id}")
+                else:
+                    logger.warning(f"Invalid ticket ID format in topic: {repr(topic)}")
+                    return None
+            else:
+                logger.warning(f"Invalid ticket ID format in topic: {repr(topic)}")
+                return None
+            
+        logger.info(f"Looking up ticket in database: {ticket_id}")
             
         try:
             db = get_db()
             ticket_data = await db.tickets.get_ticket(ticket_id)
             if ticket_data:
+                logger.info(f"Found ticket data for {ticket_id}")
                 return cls.from_dict(ticket_data)
             else:
                 logger.error(f"Ticket ID {ticket_id} not found in database.")
                 return None
         except Exception as e:
-            logger.error(f"Error loading ticket metadata from database: {e}. Topic value: {repr(topic)}")
+            logger.error(f"Error loading ticket metadata from database: {e}. Topic value: {repr(topic)}", exc_info=True)
             return None
     
     @classmethod
