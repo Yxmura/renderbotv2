@@ -6,6 +6,7 @@ import random
 import logging
 from datetime import datetime, timedelta
 from supabase_client import get_db
+from bot import load_data, save_data
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -146,7 +147,7 @@ class Giveaways(commands.Cog):
         while not self.bot.is_closed():
             try:
                 # Get all active giveaways from Supabase
-                result = await self.db.client.table('giveaways') \
+                result = self.db.client.table('giveaways') \
                     .select('*') \
                     .eq('status', 'active') \
                     .execute()
@@ -171,7 +172,7 @@ class Giveaways(commands.Cog):
     async def on_ready(self):
         # Register persistent views for active giveaways
         try:
-            result = await self.db.client.table('giveaways') \
+            result = self.db.client.table('giveaways') \
                 .select('id') \
                 .eq('status', 'active') \
                 .execute()

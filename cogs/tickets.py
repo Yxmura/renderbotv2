@@ -381,9 +381,8 @@ class TicketMetadata:
     @classmethod
     def from_topic(cls, topic: Optional[str]) -> Optional['TicketMetadata']:
         """Create TicketMetadata from channel topic."""
-        if not topic:
+        if not topic or topic.strip() == "":
             return None
-            
         try:
             data = json.loads(topic)
             return cls.from_dict(data)
@@ -863,9 +862,7 @@ class TicketPanelView(discord.ui.View):
         await self.handle_ticket_creation(interaction, "Other")
     
     async def handle_ticket_creation(self, interaction: discord.Interaction, category_name: str):
-        # Defer to prevent interaction timeout
-        await interaction.response.defer(ephemeral=True)
-        
+        # Do NOT defer before showing a modal
         # Check if user already has an open ticket
         guild = interaction.guild
         for channel in guild.channels:
@@ -926,7 +923,7 @@ class TicketPanelView(discord.ui.View):
                 )
         
         # Show the modal to the user
-        await interaction.followup.send_modal(modal)
+        await interaction.response.send_modal(modal)
 
     async def callback(self, interaction: discord.Interaction):
         # This method should not be called directly
