@@ -387,9 +387,9 @@ class Polls(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         # Register persistent views for active polls
-        polls = load_data('polls')
-
-        for poll_id, poll in polls.items():
+        active_polls = await db.get_active_polls()
+        for poll in active_polls:
+            poll_id = poll['id']
             if not poll.get("closed", False):
                 view = PollView(poll_id, poll["options"])
                 self.bot.add_view(view)
