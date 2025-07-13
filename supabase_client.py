@@ -373,6 +373,9 @@ class EnhancedDatabaseManager(DatabaseManager):
     async def update_giveaway(self, giveaway_id: str, updates: Dict[str, Any]) -> bool:
         return await self.giveaways.update_giveaway(giveaway_id, updates)
 
+    async def get_active_polls(self) -> list:
+        return await self.polls.get_active_polls()
+
 # Update the global instance
 _db_manager = EnhancedDatabaseManager()
 
