@@ -76,6 +76,7 @@ class TicketFormModal(discord.ui.Modal):
         super().__init__(title=f"{category} - Ticket Details", *args, **kwargs)
         self.category = category
         self.form_data = {}
+        self.ticket_id = kwargs.pop('ticket_id', None)  # Get ticket_id from kwargs if provided
     
     async def on_submit(self, interaction: discord.Interaction):
         # Store the form data
@@ -889,24 +890,27 @@ class TicketPanelView(discord.ui.View):
         # Create new ticket
         ticket_id = str(uuid.uuid4())[:8]
         
-        # Show the appropriate modal based on the selected category
-        modal = None
-        if "Resource Issue" in category_name:
-            modal = ResourceIssueModal()
-        elif "Partner" in category_name or "Sponsor" in category_name:
-            modal = PartnerSponsorModal()
-        elif "Staff" in category_name or "Application" in category_name:
-            modal = StaffApplicationModal()
-        elif "Content" in category_name or "Creator" in category_name:
-            modal = ContentCreatorModal()
-        else:  # General Support, Other, or any other category
-            modal = OtherInquiryModal()
+        # Set up common modal kwargs
+        modal_kwargs = {
+            'ticket_id': ticket_id,
+            'category': category_name,
+            'guild': guild,
+            'interaction': interaction
+        }
         
-        # Store the ticket creation context on the modal
-        modal.ticket_id = ticket_id
-        modal.category = category_name
-        modal.guild = guild
-        modal.interaction = interaction
+        # Show the appropriate modal based on the selected category
+        if "Resource Issue" in category_name:
+            modal = ResourceIssueModal(**modal_kwargs)
+        elif "Partner" in category_name or "Sponsor" in category_name:
+            modal = PartnerSponsorModal(**modal_kwargs)
+        elif "Staff" in category_name or "Application" in category_name:
+            modal = StaffApplicationModal(**modal_kwargs)
+        elif "Content" in category_name or "Creator" in category_name:
+            modal = ContentCreatorModal(**modal_kwargs)
+        else:  # General Support, Other, or any other category
+            modal = OtherInquiryModal(**modal_kwargs)
+        
+        # Set up channel permissions
         modal.overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
@@ -2422,7 +2426,7 @@ class Tickets(commands.Cog):
         # Defer response to prevent timeout
         await interaction.response.defer(ephemeral=True)
 
-        if not is_admin(interaction):
+        if not await is_admin(interaction):
             await interaction.followup.send("You don't have permission to use this command!", ephemeral=True)
             return
 
@@ -2476,7 +2480,7 @@ class Tickets(commands.Cog):
         # Defer response to prevent timeout
         await interaction.response.defer(ephemeral=True)
 
-        if not is_admin(interaction):
+        if not await is_admin(interaction):
             await interaction.followup.send("You don't have permission to use this command!", ephemeral=True)
             return
 
@@ -2533,7 +2537,7 @@ class Tickets(commands.Cog):
 
     @app_commands.command(name="ticket_categories", description="Customize ticket categories")
     async def ticket_categories(self, interaction):
-        if not is_admin(interaction):
+        if not await is_admin(interaction):
             await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
             return
 
@@ -2542,7 +2546,7 @@ class Tickets(commands.Cog):
 
     @app_commands.command(name="ticket_settings", description="Configure ticket system settings")
     async def ticket_settings(self, interaction):
-        if not is_admin(interaction):
+        if not await is_admin(interaction):
             await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
             return
 
@@ -2554,7 +2558,7 @@ class Tickets(commands.Cog):
         # Defer response to prevent timeout
         await interaction.response.defer(ephemeral=True)
 
-        if not is_admin(interaction):
+        if not await is_admin(interaction):
             await interaction.followup.send("You don't have permission to use this command!", ephemeral=True)
             return
 
@@ -2653,7 +2657,7 @@ class Tickets(commands.Cog):
         )
 
         # Admin commands
-        if is_admin(interaction):
+        if await is_admin(interaction):
             embed.add_field(
                 name="For Admins",
                 value=(
