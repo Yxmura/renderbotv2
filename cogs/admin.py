@@ -2,6 +2,24 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import json
+import logging
+from supabase import create_client, Client
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Initialize Supabase client
+try:
+    supabase: Client = create_client(
+        os.getenv('SUPABASE_URL'),
+        os.getenv('SUPABASE_KEY')
+    )
+    logging.info("Supabase client initialized successfully")
+except Exception as e:
+    logging.error(f"Failed to initialize Supabase client: {e}")
+    supabase = None
 
 
 # Load data
@@ -34,6 +52,7 @@ def is_admin(interaction):
 class Admin(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.supabase = supabase
 
     @app_commands.command(name="set_admin_role", description="Set admin roles for ticket management")
     @app_commands.describe(role="The role to add as admin")
@@ -181,6 +200,60 @@ class Admin(commands.Cog):
         await channel.send(content=content, embed=embed)
 
         await interaction.response.send_message(f"Announcement sent to {channel.mention}!", ephemeral=True)
+        
+    @app_commands.command(name="test_db", description="Test the database connection")
+    async def test_db(self, interaction: discord.Interaction):
+        """Test the Supabase database connection"""
+        await interaction.response.defer(ephemeral=True)
+        
+        if not self.supabase:
+            await interaction.followup.send("❌ Supabase client not initialized. Check your environment variables.")
+            return
+            
+        try:
+            # Test connection by listing tables
+            response = self.supabase.table('tickets').select("*").limit(1).execute()
+            
+            if hasattr(response, 'error') and response.error:
+                await interaction.followup.send(f"❌ Database error: {response.error}")
+                return
+                
+            # Check if tickets table exists
+            tables = self.supabase.table('pg_tables').select("tablename").execute()
+            table_names = [table['tablename'] for table in tables.data] if hasattr(tables, 'data') else []
+            
+            embed = discord.Embed(
+                title="✅ Database Connection Test",
+                color=discord.Color.green()
+            )
+            
+            embed.add_field(
+                name="Connection Status",
+                value="✅ Successfully connected to Supabase",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="Tables in Database",
+                value="\n".join(table_names) if table_names else "No tables found",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="Tickets Table Status",
+                value="✅ Found" if 'tickets' in table_names else "❌ Not found",
+                inline=False
+            )
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            error_embed = discord.Embed(
+                title="❌ Database Test Failed",
+                description=f"Error: {str(e)}",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=error_embed)
 
 
 async def setup(bot):

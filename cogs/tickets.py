@@ -455,23 +455,31 @@ class TicketMetadata:
             return None
             
     async def save(self):
-        """Save ticket metadata to database."""
+        """Save ticket metadata to the database."""
         try:
+            logger.info(f"Attempting to save ticket {self.ticket_id} to database")
+            logger.info(f"Ticket data: {self.to_dict()}")
+            
+            # Convert metadata to dictionary
             data = self.to_dict()
-            db = get_db()
             
-            # Check if ticket exists
-            existing_ticket = await db.tickets.get_ticket(self.ticket_id)
+            logger.info(f"Connecting to Supabase...")
+            # Insert or update the ticket in the database
+            result = supabase.table('tickets').upsert(data).execute()
             
-            if existing_ticket:
-                # Update existing ticket
-                return await db.tickets.update_ticket(self.ticket_id, data)
-            else:
-                # Insert new ticket
-                ticket_id = await db.tickets.create_ticket(data)
-                return ticket_id is not None
+            logger.info(f"Supabase response: {result}")
+            
+            if not result.data:
+                logger.error(f"Failed to save ticket {self.ticket_id} to database - No data returned")
+                return False
+                
+            logger.info(f"Successfully saved ticket {self.ticket_id} to database")
+            return True
+            
         except Exception as e:
-            logger.error(f"Error saving ticket to database: {e}")
+            logger.error(f"Error saving ticket {self.ticket_id}", exc_info=True)
+            logger.error(f"Supabase URL: {os.getenv('SUPABASE_URL')}")
+            logger.error(f"Supabase Key: {'*' * 10}{os.getenv('SUPABASE_KEY')[-4:] if os.getenv('SUPABASE_KEY') else 'None'}")
             return False
     
     def to_topic(self) -> str:
