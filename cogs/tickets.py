@@ -2780,8 +2780,71 @@ class Tickets(commands.Cog):
             color=discord.Color.blue()
         )
         
-        # Add a footer
+        # Add information about ticket categories
+        categories = [
+            {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
+            {"name": "Resource Issue", "emoji": "⚠️", "description": "Report a problem with a resource"},
+            {"name": "Partner/Sponsor", "emoji": "💰", "description": "Partner or sponsorship inquiries"},
+            {"name": "Staff Application", "emoji": "🔒", "description": "Apply to join our staff team"},
+            {"name": "Content Creator", "emoji": "📷", "description": "Content creator applications"},
+            {"name": "Other", "emoji": "📝", "description": "Other inquiries"}
+        ]
+        
+        # Add fields for each category
+        for category in categories:
+            embed.add_field(
+                name=f"{category['emoji']} {category['name']}",
+                value=category['description'],
+                inline=True
+            )
+        
+        # Add footer
         embed.set_footer(text="Click a button below to create a ticket")
+        
+        # Create the ticket panel view
+        view = TicketPanelView()
+        
+        # Send the ticket panel
+        await target_channel.send(embed=embed, view=view)
+        
+        # Send confirmation message
+        await interaction.followup.send(f"✅ Ticket panel has been set up in {target_channel.mention}!", ephemeral=True)
+        logger.info(f"Ticket system set up in channel {target_channel.id} by {interaction.user} (ID: {interaction.user.id})")
+
+    @app_commands.command(name="ticket_panel", description="Create a customized ticket panel")
+    @app_commands.describe(
+        channel="The channel to create the panel in",
+        title="Panel title (default: Support Ticket System)",
+        description="Panel description",
+        color="Panel color (blue, green, red, yellow, purple, orange)"
+    )
+    async def ticket_panel(self, interaction, channel: discord.TextChannel = None, title: str = "🎫 Support Ticket System", description: str = "Need help? Create a ticket by clicking one of the buttons below!", color: str = "blue"):
+        # Defer response to prevent timeout
+        await interaction.response.defer(ephemeral=True)
+
+        if not is_admin(interaction):
+            await interaction.followup.send("You don't have permission to use this command!", ephemeral=True)
+            return
+
+        target_channel = channel or interaction.channel
+
+        # Convert color string to discord.Color
+        color_map = {
+            "blue": discord.Color.blue(),
+            "green": discord.Color.green(),
+            "red": discord.Color.red(),
+            "yellow": discord.Color.yellow(),
+            "purple": discord.Color.purple(),
+            "orange": discord.Color.orange()
+        }
+        
+        embed_color = color_map.get(color.lower(), discord.Color.blue())
+
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=embed_color
+        )
         
         # Add information about ticket categories
         categories = [
@@ -2794,9 +2857,25 @@ class Tickets(commands.Cog):
         ]
         
         # Add fields for each category
+        for category in categories:
+            embed.add_field(
+                name=f"{category['emoji']} {category['name']}",
+                value=category['description'],
+                inline=True
+            )
+        
+        # Add footer
+        embed.set_footer(text="Click a button below to create a ticket")
+        
+        # Create the ticket panel view
+        view = TicketPanelView()
+        
+        # Send the ticket panel
+        await target_channel.send(embed=embed, view=view)
+        
         # Send confirmation message
-        await interaction.response.send_message("Ticket claimed!", ephemeral=True)
-        logger.info(f"Ticket system set up in channel {target_channel.id} by {interaction.user} (ID: {interaction.user.id})")
+        await interaction.followup.send(f"✅ Custom ticket panel has been created in {target_channel.mention}!", ephemeral=True)
+        logger.info(f"Custom ticket panel created in channel {target_channel.id} by {interaction.user} (ID: {interaction.user.id})")
 
     @app_commands.command(name="ticket_categories", description="Customize ticket categories")
     async def ticket_categories(self, interaction):
