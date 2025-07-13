@@ -211,38 +211,62 @@ class Admin(commands.Cog):
             return
             
         try:
-            # Test connection by listing tables
+            # Test connection by trying to access the tickets table
             response = self.supabase.table('tickets').select("*").limit(1).execute()
             
             if hasattr(response, 'error') and response.error:
-                await interaction.followup.send(f"❌ Database error: {response.error}")
-                return
-                
-            # Check if tickets table exists
-            tables = self.supabase.table('pg_tables').select("tablename").execute()
-            table_names = [table['tablename'] for table in tables.data] if hasattr(tables, 'data') else []
+                if 'relation "tickets" does not exist' in str(response.error):
+                    embed = discord.Embed(
+                        title="⚠️ Database Test - Missing Table",
+                        description="The 'tickets' table doesn't exist in your database.",
+                        color=discord.Color.orange()
+                    )
+                    embed.add_field(
+                        name="How to fix",
+                        value=(
+                            "1. Go to your Supabase dashboard\n"
+                            "2. Open the SQL editor\n"
+                            "3. Create the tickets table with this SQL:\n"
+                            "```sql\n"
+                            "CREATE TABLE IF NOT EXISTS public.tickets (\n"
+                            "    ticket_id TEXT PRIMARY KEY,\n"
+                            "    user_id BIGINT NOT NULL,\n"
+                            "    category TEXT,\n"
+                            "    status TEXT DEFAULT 'open',\n"
+                            "    priority TEXT DEFAULT 'normal',\n"
+                            "    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),\n"
+                            "    claimed_by BIGINT,\n"
+                            "    last_activity TIMESTAMP WITH TIME ZONE DEFAULT NOW(),\n"
+                            "    closed_at TIMESTAMP WITH TIME ZONE,\n"
+                            "    closed_by BIGINT,\n"
+                            "    close_reason TEXT,\n"
+                            "    close_type TEXT,\n"
+                            "    channel_id BIGINT,\n"
+                            "    guild_id BIGINT\n"
+                            ");\n"
+                            "```"
+                        ),
+                        inline=False
+                    )
+                    await interaction.followup.send(embed=embed)
+                    return
+                else:
+                    await interaction.followup.send(f"❌ Database error: {response.error}")
+                    return
             
+            # If we got here, the table exists and we can query it
             embed = discord.Embed(
                 title="✅ Database Connection Test",
+                description="Successfully connected to Supabase and verified the tickets table.",
                 color=discord.Color.green()
             )
             
+            # Get ticket count
+            count = len(response.data) if hasattr(response, 'data') else 0
             embed.add_field(
-                name="Connection Status",
-                value="✅ Successfully connected to Supabase",
-                inline=False
-            )
-            
-            embed.add_field(
-                name="Tables in Database",
-                value="\n".join(table_names) if table_names else "No tables found",
-                inline=False
-            )
-            
-            embed.add_field(
-                name="Tickets Table Status",
-                value="✅ Found" if 'tickets' in table_names else "❌ Not found",
-                inline=False
+                name="Tickets in Database",
+                value=str(count),
+                inline=True
             )
             
             await interaction.followup.send(embed=embed)
