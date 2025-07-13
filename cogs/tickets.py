@@ -387,7 +387,7 @@ class TicketMetadata:
             data = json.loads(topic)
             return cls.from_dict(data)
         except (json.JSONDecodeError, TypeError) as e:
-            logger.error(f"Error parsing ticket metadata: {e}")
+            logger.error(f"Error parsing ticket metadata: {e}. Topic value: {repr(topic)}")
             return None
     
     @classmethod
