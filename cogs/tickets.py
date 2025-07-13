@@ -379,15 +379,21 @@ class TicketMetadata:
         self.guild_id = kwargs.get('guild_id')
 
     @classmethod
-    def from_topic(cls, topic: Optional[str]) -> Optional['TicketMetadata']:
-        """Create TicketMetadata from channel topic."""
+    async def from_topic(cls, topic: Optional[str]) -> Optional['TicketMetadata']:
+        """Create TicketMetadata from channel topic (ticket ID)."""
         if not topic or topic.strip() == "":
             return None
+        ticket_id = topic.strip()
         try:
-            data = json.loads(topic)
-            return cls.from_dict(data)
-        except (json.JSONDecodeError, TypeError) as e:
-            logger.error(f"Error parsing ticket metadata: {e}. Topic value: {repr(topic)}")
+            db = get_db()
+            ticket_data = await db.tickets.get_ticket(ticket_id)
+            if ticket_data:
+                return cls.from_dict(ticket_data)
+            else:
+                logger.error(f"Ticket ID {ticket_id} not found in Supabase.")
+                return None
+        except Exception as e:
+            logger.error(f"Error loading ticket metadata from Supabase: {e}. Topic value: {repr(topic)}")
             return None
     
     @classmethod
@@ -568,7 +574,7 @@ class TicketCategoryButton(discord.ui.Button):
                 continue
                 
             # Check if channel is a ticket channel for this user
-            metadata = TicketMetadata.from_topic(channel.topic)
+            metadata = await TicketMetadata.from_topic(channel.topic)
             if (metadata and 
                 metadata.user_id == interaction.user.id and 
                 metadata.status == "open"):
@@ -870,7 +876,7 @@ class TicketPanelView(discord.ui.View):
                 continue
                 
             # Check if channel is a ticket channel for this user
-            metadata = TicketMetadata.from_topic(channel.topic)
+            metadata = await TicketMetadata.from_topic(channel.topic)
             if (metadata and 
                 metadata.user_id == interaction.user.id and 
                 metadata.status == "open"):
