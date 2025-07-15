@@ -4,6 +4,7 @@
                 {"name": "Resource Issue", "emoji": "⚠️", "description": "Report a problem with a resource"},
                 {"name": "Partner- or sponsorship", "emoji": "💰", "description": "Partner or sponsorship inqueries"},
                 {"name": "Staff Application - if open", "emoji": "🔒", "description": "Request for staff application, if open"},
+                {"name": "Bug Report", "emoji": "🐛", "description": "Report a bug"},
                 {"name": "Content Creator", "emoji": "📷", "description": "Request for content creator application"},
                 {"name": "Other", "emoji": "📝", "description": "Other inquiries (e.g. bug reports)"}
             ],
@@ -14,5 +15,8 @@
     "auto_roles": [],
     "ticket_category_id": 1361033906597531811,
     "ticket_log_channel": 1361035162611220521,
-    "support_role_id": 1325094483695505593
+    "support_role_id": 1325094483695505593,
+    "polls_role": 1368596260340240514,
+    "announce_channel_id": 1317610380700422227,
+    "announce_role_id": 1330576797267660841
 }

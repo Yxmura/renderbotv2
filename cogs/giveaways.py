@@ -112,6 +112,60 @@ class GiveawayView(discord.ui.View):
         save_data('giveaways', giveaways)
 
 
+class RerollButton(discord.ui.Button):
+    def __init__(self, giveaway_id):
+        super().__init__(label="Reroll Winner", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id=f"reroll_{giveaway_id}")
+        self.giveaway_id = giveaway_id
+
+    async def callback(self, interaction: discord.Interaction):
+        # Only admins can reroll
+        if not is_admin(interaction):
+            await interaction.response.send_message("You need admin permissions to reroll!", ephemeral=True)
+            return
+        giveaways = load_data('giveaways')
+        giveaway = giveaways.get(str(self.giveaway_id))
+        if not giveaway or giveaway["status"] != "ended":
+            await interaction.response.send_message("This giveaway is not ended or does not exist!", ephemeral=True)
+            return
+        entries = giveaway["entries"]
+        winner_count = min(giveaway["winner_count"], len(entries))
+        if not entries or winner_count < 1:
+            await interaction.response.send_message("No valid entries to reroll!", ephemeral=True)
+            return
+        new_winners = random.sample(entries, winner_count)
+        giveaway["winners"] = new_winners
+        giveaway["rerolled_at"] = datetime.now().isoformat()
+        giveaway["rerolled_by"] = interaction.user.id
+        save_data('giveaways', giveaways)
+        channel = interaction.guild.get_channel(giveaway["channel_id"])
+        if channel:
+            winners_mentions = " ".join([f"<@{winner_id}>" for winner_id in new_winners])
+            await channel.send(
+                f"🔄 The giveaway for **{giveaway['prize']}** has been rerolled!\n"
+                f"New winner{'s' if winner_count > 1 else ''}: {winners_mentions}\n"
+                f"https://discord.com/channels/{interaction.guild.id}/{giveaway['channel_id']}/{giveaway['message_id']}"
+            )
+            # Update the giveaway message embed
+            try:
+                message = await channel.fetch_message(giveaway["message_id"])
+                embed = message.embeds[0]
+                winners_text = "\n".join([f"<@{winner_id}>" for winner_id in new_winners])
+                # Update or add the Winners field
+                winner_field_index = None
+                for i, field in enumerate(embed.fields):
+                    if field.name == "Winners":
+                        winner_field_index = i
+                        break
+                if winner_field_index is not None:
+                    embed.set_field_at(winner_field_index, name="Winners", value=winners_text, inline=False)
+                else:
+                    embed.add_field(name="Winners", value=winners_text, inline=False)
+                await message.edit(embed=embed)
+            except Exception as e:
+                print(f"Error updating giveaway message after reroll: {e}")
+        await interaction.response.send_message("Giveaway rerolled!", ephemeral=True)
+
+
 class Giveaways(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -214,7 +268,10 @@ class Giveaways(commands.Cog):
                 embed.timestamp = datetime.now()
 
                 # Update the message
-                await message.edit(embed=embed, view=None)
+                # Add reroll button for ended giveaways
+                view = discord.ui.View()
+                view.add_item(RerollButton(giveaway_id))
+                await message.edit(embed=embed, view=view)
 
                 # Send winner announcement
                 if winners:

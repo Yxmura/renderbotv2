@@ -495,5 +495,43 @@ class Utility(commands.Cog):
         
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(name="announce", description="Send an announcement to the configured channel, pinging the configured role.")
+    @app_commands.describe(subject="The subject/title of the announcement", content="The announcement content")
+    async def announce(self, interaction: discord.Interaction, subject: str, content: str):
+        """
+        Admin-only command to send an announcement embed to the configured channel, pinging the configured role.
+        """
+        # Check admin permissions
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("You need administrator permissions to use this command!", ephemeral=True)
+            return
+        # Load config
+        try:
+            with open('data/config.json', 'r') as f:
+                config = json.load(f)
+        except Exception:
+            await interaction.response.send_message("Config file not found or invalid.", ephemeral=True)
+            return
+        channel_id = config.get("announce_channel_id")
+        role_id = config.get("announce_role_id")
+        if not channel_id or not role_id or not str(channel_id).isdigit() or not str(role_id).isdigit():
+            await interaction.response.send_message("Announcement channel or role not set in config.", ephemeral=True)
+            return
+        channel = interaction.guild.get_channel(int(channel_id))
+        if not channel:
+            await interaction.response.send_message("Announcement channel not found!", ephemeral=True)
+            return
+        # Build the embed
+        embed = discord.Embed(
+            title=subject,
+            description=content,
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text=f"Announcement by {interaction.user.display_name} ({interaction.user})")
+        embed.timestamp = datetime.utcnow()
+        # Send the announcement with role ping outside the embed
+        await channel.send(content=f'<@&{role_id}>', embed=embed, allowed_mentions=discord.AllowedMentions(roles=True))
+        await interaction.response.send_message(f"Announcement sent in {channel.mention}", ephemeral=True)
+
 async def setup(bot):
     await bot.add_cog(Utility(bot))

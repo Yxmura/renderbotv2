@@ -346,7 +346,7 @@ class Polls(commands.Cog):
         option3="Third option (optional)",
         option4="Fourth option (optional)",
         option5="Fifth option (optional)",
-        duration="Poll duration (e.g., '2h', '30min', '10s', '1d') (optional, default: no time limit)"
+        duration="Poll duration (e.g., '2h', '30min', '10s', '1d')"
     )
     async def create_poll(
             self,
@@ -359,14 +359,17 @@ class Polls(commands.Cog):
             option5: str = None,
             duration: str = None
     ):
-        # Parse duration if provided
+        # Enforce duration is set
+        if not duration:
+            await interaction.response.send_message("You must specify a poll duration (e.g., 2min, 30s, 8h, 1d)", ephemeral=True)
+            return
+        # Parse duration
         duration_minutes = None
-        if duration:
-            try:
-                duration_minutes = self.parse_duration(duration)
-            except ValueError as e:
-                await interaction.response.send_message(str(e), ephemeral=True)
-                return
+        try:
+            duration_minutes = self.parse_duration(duration)
+        except ValueError as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
+            return
         
         # Collect options
         options = [option1, option2]
@@ -391,61 +394,46 @@ class Polls(commands.Cog):
         # Create poll view
         view = PollView(poll_id, options)
 
-        # Create initial embed
+        # Create initial embed (enhanced)
         embed = discord.Embed(
-            title=question,
-            description=f"React with the buttons below to vote!",
-            color=discord.Color.blue()
+            title=f"📊 {question}",
+            description="Vote by clicking a button below!",
+            color=discord.Color.blurple()
         )
-
-        # Add options to embed
+        embed.set_thumbnail(url=interaction.guild.icon.url if interaction.guild.icon else discord.Embed.Empty)
+        embed.add_field(name="Status", value="🟢 **Open**", inline=True)
+        embed.add_field(name="Duration", value=duration, inline=True)
+        embed.add_field(name="Total Options", value=str(len(options)), inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=False)
         for i, option in enumerate(options):
-            embed.add_field(name=f"Option {i + 1}", value=option, inline=False)
-
-        # Add end time if set
-        if end_time:
-            # Format duration for display
-            days = duration_minutes // 1440
-            hours = (duration_minutes % 1440) // 60
-            minutes = duration_minutes % 60
-            
-            duration_str = []
-            if days > 0:
-                duration_str.append(f"{days}d")
-            if hours > 0:
-                duration_str.append(f"{hours}h")
-            if minutes > 0 or not duration_str:  # Show at least minutes if no other units
-                duration_str.append(f"{minutes}m")
-                
-            embed.set_footer(text=f"Poll ends in: {' '.join(duration_str)}")
+            embed.add_field(name=f"Option {i + 1}", value=f"{option}", inline=False)
+        embed.set_footer(text="Poll created by {} • Ends in: {}".format(interaction.user.display_name, duration))
 
         # Get poll updates role from config
         config = load_data('config')
         poll_updates_role_id = config.get('polls_role', '')
-        
-        # Prepare the message content with role mention if configured
         content = None
-        if poll_updates_role_id and poll_updates_role_id.isdigit():
+        if poll_updates_role_id and str(poll_updates_role_id).isdigit():
             content = f'<@&{poll_updates_role_id}> New poll created!'
         
         # Send poll message with role mention
-        await interaction.response.send_message(content=content, embed=embed, view=view)
-        message = await interaction.original_response()
-
+        if content:
+            poll_message = await interaction.channel.send(content=content, embed=embed, view=view)
+        else:
+            poll_message = await interaction.channel.send(embed=embed, view=view)
+        # Remove any response to the user
         # Save poll data
         polls[poll_id] = {
             "question": question,
             "options": options,
             "votes": {},
             "channel_id": interaction.channel.id,
-            "message_id": message.id,
+            "message_id": poll_message.id,
             "created_by": interaction.user.id,
             "created_at": datetime.now().isoformat()
         }
-
         if end_time:
             polls[poll_id]["end_time"] = end_time
-
         save_data('polls', polls)
 
     @app_commands.command(name="endpoll", description="End a poll early")
