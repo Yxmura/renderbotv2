@@ -138,6 +138,13 @@ class TicketFormModal(discord.ui.Modal):
 class GeneralSupportModal(TicketFormModal):
     def __init__(self, *args, **kwargs):
         super().__init__("General Support", *args, **kwargs)
+        self.short_desc = discord.ui.TextInput(
+            label="Short Description",
+            placeholder="Briefly describe the reason for your ticket...",
+            required=True,
+            max_length=200
+        )
+        self.add_item(self.short_desc)
         self.question = discord.ui.TextInput(
             label="How can we help you?",
             placeholder="Describe your question or issue...",
@@ -146,14 +153,19 @@ class GeneralSupportModal(TicketFormModal):
         )
         self.add_item(self.question)
     async def on_submit(self, interaction: discord.Interaction):
-        self.form_data = {"Question": self.question.value}
-        if hasattr(self, 'short_description') and self.short_description:
-            self.form_data['Short Description'] = self.short_description
+        self.form_data = {"Short Description": self.short_desc.value, "Question": self.question.value}
         await super().on_submit(interaction)
 
 class ResourceIssueModal(TicketFormModal):
     def __init__(self, *args, **kwargs):
         super().__init__("Resource Issue", *args, **kwargs)
+        self.short_desc = discord.ui.TextInput(
+            label="Short Description",
+            placeholder="Briefly describe the reason for your ticket...",
+            required=True,
+            max_length=200
+        )
+        self.add_item(self.short_desc)
         self.resource_title = discord.ui.TextInput(
             label="Resource Title (Optional)",
             placeholder="Name of the resource with the issue",
@@ -170,17 +182,22 @@ class ResourceIssueModal(TicketFormModal):
         )
         self.add_item(self.issue_description)
     async def on_submit(self, interaction: discord.Interaction):
-        self.form_data = {}
+        self.form_data = {"Short Description": self.short_desc.value}
         if self.resource_title.value:
             self.form_data["Resource Title"] = self.resource_title.value
         self.form_data["Issue Description"] = self.issue_description.value
-        if hasattr(self, 'short_description') and self.short_description:
-            self.form_data['Short Description'] = self.short_description
         await super().on_submit(interaction)
 
 class PartnerSponsorModal(TicketFormModal):
     def __init__(self, *args, **kwargs):
         super().__init__("Partner- or sponsorship", *args, **kwargs)
+        self.short_desc = discord.ui.TextInput(
+            label="Short Description",
+            placeholder="Briefly describe the reason for your ticket...",
+            required=True,
+            max_length=200
+        )
+        self.add_item(self.short_desc)
         self.organization = discord.ui.TextInput(
             label="Organization/Channel Name",
             placeholder="Your organization or channel name",
@@ -205,17 +222,23 @@ class PartnerSponsorModal(TicketFormModal):
         self.add_item(self.details)
     async def on_submit(self, interaction: discord.Interaction):
         self.form_data = {
+            "Short Description": self.short_desc.value,
             "Organization/Channel Name": self.organization.value,
             "Link": f"[Click here]({self.link.value})" if self.link.value.startswith(('http://', 'https://')) else self.link.value,
             "Details": self.details.value
         }
-        if hasattr(self, 'short_description') and self.short_description:
-            self.form_data['Short Description'] = self.short_description
         await super().on_submit(interaction)
 
 class StaffApplicationModal(TicketFormModal):
     def __init__(self, *args, **kwargs):
         super().__init__("Staff Application - if open", *args, **kwargs)
+        self.short_desc = discord.ui.TextInput(
+            label="Short Description",
+            placeholder="Briefly describe the reason for your ticket...",
+            required=True,
+            max_length=200
+        )
+        self.add_item(self.short_desc)
         self.name = discord.ui.TextInput(
             label="Full Name",
             placeholder="Your full name",
@@ -254,19 +277,25 @@ class StaffApplicationModal(TicketFormModal):
         self.add_item(self.why_join)
     async def on_submit(self, interaction: discord.Interaction):
         self.form_data = {
+            "Short Description": self.short_desc.value,
             "Full Name": self.name.value,
             "Age": self.age.value,
             "Timezone": self.timezone.value,
             "Previous Experience": self.experience.value,
             "Why do you want to join our staff team?": self.why_join.value
         }
-        if hasattr(self, 'short_description') and self.short_description:
-            self.form_data['Short Description'] = self.short_description
         await super().on_submit(interaction)
 
 class BugReportModal(TicketFormModal):
     def __init__(self, *args, **kwargs):
         super().__init__("Bug Report", *args, **kwargs)
+        self.short_desc = discord.ui.TextInput(
+            label="Short Description",
+            placeholder="Briefly describe the reason for your ticket...",
+            required=True,
+            max_length=200
+        )
+        self.add_item(self.short_desc)
         self.page = discord.ui.TextInput(
             label="On what page did the bug occur?",
             placeholder="e.g. /dashboard, /login, ...",
@@ -298,18 +327,24 @@ class BugReportModal(TicketFormModal):
         self.add_item(self.expected)
     async def on_submit(self, interaction: discord.Interaction):
         self.form_data = {
+            "Short Description": self.short_desc.value,
             "Page": self.page.value,
             "Browser": self.browser.value,
             "Steps to Reproduce": self.steps.value,
             "Expected Behavior": self.expected.value
         }
-        if hasattr(self, 'short_description') and self.short_description:
-            self.form_data['Short Description'] = self.short_description
         await super().on_submit(interaction)
 
 class ContentCreatorModal(TicketFormModal):
     def __init__(self, *args, **kwargs):
         super().__init__("Content Creator", *args, **kwargs)
+        self.short_desc = discord.ui.TextInput(
+            label="Short Description",
+            placeholder="Briefly describe the reason for your ticket...",
+            required=True,
+            max_length=200
+        )
+        self.add_item(self.short_desc)
         self.channel_name = discord.ui.TextInput(
             label="Channel Name",
             placeholder="Your channel name",
@@ -348,6 +383,7 @@ class ContentCreatorModal(TicketFormModal):
         self.add_item(self.collab_ideas)
     async def on_submit(self, interaction: discord.Interaction):
         self.form_data = {
+            "Short Description": self.short_desc.value,
             "Channel Name": self.channel_name.value,
             "Channel URL": f"[Click here]({self.channel_url.value})" if self.channel_url.value.startswith(('http://', 'https://')) else self.channel_url.value,
             "Subscriber/Followers Count": self.subscriber_count.value,
@@ -355,13 +391,18 @@ class ContentCreatorModal(TicketFormModal):
         }
         if self.last_video_views.value:
             self.form_data["Last Video View Count"] = self.last_video_views.value
-        if hasattr(self, 'short_description') and self.short_description:
-            self.form_data['Short Description'] = self.short_description
         await super().on_submit(interaction)
 
 class OtherInquiryModal(TicketFormModal):
     def __init__(self, *args, **kwargs):
         super().__init__("Other", *args, **kwargs)
+        self.short_desc = discord.ui.TextInput(
+            label="Short Description",
+            placeholder="Briefly describe the reason for your ticket...",
+            required=True,
+            max_length=200
+        )
+        self.add_item(self.short_desc)
         self.subject = discord.ui.TextInput(
             label="Subject",
             placeholder="Briefly describe what this is about",
@@ -379,11 +420,10 @@ class OtherInquiryModal(TicketFormModal):
         self.add_item(self.details)
     async def on_submit(self, interaction: discord.Interaction):
         self.form_data = {
+            "Short Description": self.short_desc.value,
             "Subject": self.subject.value,
             "Details": self.details.value
         }
-        if hasattr(self, 'short_description') and self.short_description:
-            self.form_data['Short Description'] = self.short_description
         await super().on_submit(interaction)
 
 
@@ -638,23 +678,7 @@ class TicketPanelButton(discord.ui.Button):
             if (metadata and metadata.user_id == interaction.user.id and metadata.status == "open"):
                 await interaction.response.send_message(f"You already have an open ticket: {channel.mention}", ephemeral=True)
                 return
-        # Prompt for a short description before opening the modal
-        await interaction.response.send_modal(TicketShortDescriptionModal(self.category))
-
-class TicketShortDescriptionModal(discord.ui.Modal):
-    def __init__(self, category):
-        super().__init__(title=f"{category} - Short Description")
-        self.category = category
-        self.short_desc = discord.ui.TextInput(
-            label="Short Description",
-            placeholder="Briefly describe the reason for your ticket...",
-            required=True,
-            max_length=200
-        )
-        self.add_item(self.short_desc)
-    async def on_submit(self, interaction: discord.Interaction):
-        # After getting the short description, show the full modal for the category
-        modal = None
+        # Show the full modal for the category directly (no intermediate modal)
         if "General Support" in self.category:
             modal = GeneralSupportModal()
         elif "Resource Issue" in self.category:
@@ -669,8 +693,6 @@ class TicketShortDescriptionModal(discord.ui.Modal):
             modal = ContentCreatorModal()
         else:
             modal = OtherInquiryModal()
-        # Pass the short description to the modal (as an attribute)
-        modal.short_description = self.short_desc.value
         await interaction.response.send_modal(modal)
 
 
@@ -1989,7 +2011,7 @@ class Tickets(commands.Cog):
         # Defer response to prevent timeout
         await interaction.response.defer(ephemeral=True)
 
-        if not is_admin(interaction):
+        if not await is_admin(interaction):
             await interaction.followup.send("You don't have permission to use this command!", ephemeral=True)
             return
 
@@ -2024,7 +2046,7 @@ class Tickets(commands.Cog):
 
     @app_commands.command(name="ticket_categories", description="Customize ticket categories")
     async def ticket_categories(self, interaction):
-        if not is_admin(interaction):
+        if not await is_admin(interaction):
             await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
             return
 
@@ -2033,7 +2055,7 @@ class Tickets(commands.Cog):
 
     @app_commands.command(name="ticket_settings", description="Configure ticket system settings")
     async def ticket_settings(self, interaction):
-        if not is_admin(interaction):
+        if not await is_admin(interaction):
             await interaction.response.send_message("You don't have permission to use this command!", ephemeral=True)
             return
 
@@ -2045,7 +2067,7 @@ class Tickets(commands.Cog):
         # Defer response to prevent timeout
         await interaction.response.defer(ephemeral=True)
 
-        if not is_admin(interaction):
+        if not await is_admin(interaction):
             await interaction.followup.send("You don't have permission to use this command!", ephemeral=True)
             return
 
