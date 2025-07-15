@@ -25,74 +25,62 @@ os.makedirs('data', exist_ok=True)
 # --- Discord-Native Metadata Utilities ---
 
 async def get_metadata_from_channel(channel: discord.TextChannel) -> Optional[dict]:
-    """Fetches and parses ticket metadata from a message in the channel."""
-    if not channel.topic or not channel.topic.isdigit():
+    """Fetches and parses ticket metadata from the channel topic."""
+    if not channel.topic or not channel.topic.startswith("TICKET_METADATA:"):
         return None
     try:
-        message_id = int(channel.topic)
-        metadata_msg = await channel.fetch_message(message_id)
-        if not metadata_msg.embeds:
-            return None
-        
-        # Find the JSON in the embed's description or a field
-        json_str = None
-        if "```json" in metadata_msg.embeds[0].description:
-            json_str = metadata_msg.embeds[0].description.split('```json\n')[1].split('```')[0]
-        else:
-            for field in metadata_msg.embeds[0].fields:
-                if field.name == "Metadata":
-                    json_str = field.value.split('```json\n')[1].split('```')[0]
-                    break
-        
-        if json_str:
-            return json.loads(json_str)
-    except (discord.NotFound, json.JSONDecodeError, IndexError):
+        json_str = channel.topic.split("TICKET_METADATA:", 1)[1].strip()
+        data = json.loads(json_str)
+        return data
+    except (json.JSONDecodeError, IndexError):
         return None
     return None
 
 async def update_metadata_message(channel: discord.TextChannel, new_metadata: dict):
     """
-    Update the pinned metadata message in the ticket channel with new metadata.
-    Handles errors gracefully and logs actions.
+    Update the metadata message in the log channel with new metadata.
     """
     try:
-        # Find the pinned metadata message (should be the only pinned message)
-        pins = await channel.pins()
-        meta_msg = None
-        for msg in pins:
-            if msg.embeds and msg.embeds[0].title == "📝 Ticket Metadata":
-                meta_msg = msg
-                break
-        if not meta_msg:
-            # Fallback: try to fetch by topic if it's a message ID
-            if channel.topic and channel.topic.isdigit():
-                try:
-                    meta_msg = await channel.fetch_message(int(channel.topic))
-                except Exception:
-                    pass
-        if not meta_msg:
-            # No metadata message found, create a new one
-            embed = discord.Embed(
-                title="📝 Ticket Metadata",
-                description=f"```json\n{json.dumps(new_metadata, indent=2)}\n```",
-                color=discord.Color.blue()
-            )
-            meta_msg = await channel.send(embed=embed)
-            await meta_msg.pin()
-            await channel.edit(topic=str(meta_msg.id))
-        else:
-            # Update the embed
-            embed = meta_msg.embeds[0]
-            embed.description = f"```json\n{json.dumps(new_metadata, indent=2)}\n```"
-            await meta_msg.edit(embed=embed)
+        config = load_config()
+        log_channel_id = config.get("ticket_log_channel")
+        if not log_channel_id:
+            return
+        log_channel = channel.guild.get_channel(int(log_channel_id))
+        if not log_channel:
+            return
+        log_message_id = new_metadata.get("log_message_id")
+        if not log_message_id:
+            return
+        try:
+            log_msg = await log_channel.fetch_message(int(log_message_id))
+        except Exception:
+            return
+        embed = discord.Embed(
+            title="📝 Ticket Metadata",
+            description=f"```json\n{json.dumps(new_metadata, indent=2)}\n```",
+            color=discord.Color.blue()
+        )
+        await log_msg.edit(embed=embed)
+        # Update the channel topic with the latest metadata
+        await channel.edit(topic=f"TICKET_METADATA:{json.dumps(new_metadata)}")
     except Exception as e:
-        logger.error(f"Failed to update ticket metadata in channel {channel.id}: {e}")
+        logger.error(f"Failed to update ticket metadata in log channel for ticket {new_metadata.get('ticket_id')}: {e}")
 
 async def create_metadata_message(channel: discord.TextChannel, metadata: dict):
-    """Creates a new metadata message in the channel."""
-    embed = discord.Embed(title="Ticket Metadata", description=f"```json\n{json.dumps(metadata, indent=2)}```")
-    metadata_msg = await channel.send(embed=embed)
-    await channel.edit(topic=str(metadata_msg.id))
+    """Creates a new metadata message in the log channel and stores its ID in the metadata."""
+    config = load_config()
+    log_channel_id = config.get("ticket_log_channel")
+    if not log_channel_id:
+        return None
+    log_channel = channel.guild.get_channel(int(log_channel_id))
+    if not log_channel:
+        return None
+    embed = discord.Embed(title="📝 Ticket Metadata", description=f"```json\n{json.dumps(metadata, indent=2)}\n```", color=discord.Color.blue())
+    log_msg = await log_channel.send(embed=embed)
+    metadata["log_message_id"] = log_msg.id
+    # Store metadata in the channel topic
+    await channel.edit(topic=f"TICKET_METADATA:{json.dumps(metadata)}")
+    return log_msg.id
 
 # Base form modal for ticket creation
 class TicketFormModal(discord.ui.Modal):    
@@ -673,16 +661,16 @@ class TicketPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         # Add a button for each category (only 5, matching config)
-        self.add_item(TicketPanelButton("General Support", "❓", 0))
-        self.add_item(TicketPanelButton("Resource Issue", "⚠️", 0))
-        self.add_item(TicketPanelButton("Partner/Sponsor", "💰", 1))
-        self.add_item(TicketPanelButton("Staff Application", "🔒", 1))
-        self.add_item(TicketPanelButton("Other", "📝", 2))
+        self.add_item(TicketPanelButton("General Support", "❓", 0, discord.ButtonStyle.primary))
+        self.add_item(TicketPanelButton("Resource Issue", "⚠️", 0, discord.ButtonStyle.danger))
+        self.add_item(TicketPanelButton("Partner/Sponsor", "💰", 1, discord.ButtonStyle.success))
+        self.add_item(TicketPanelButton("Staff Application", "🔒", 1, discord.ButtonStyle.secondary))
+        self.add_item(TicketPanelButton("Other", "📝", 2, discord.ButtonStyle.gray))
 
 class TicketPanelButton(discord.ui.Button):
-    def __init__(self, label, emoji, row):
+    def __init__(self, label, emoji, row, style):
         super().__init__(
-            style=discord.ButtonStyle.primary,
+            style=style,
             label=label,
             emoji=emoji,
             custom_id=f"ticket_panel_{label.lower().replace(' ', '_')}",
@@ -2557,7 +2545,7 @@ class TicketCategorySelect:
             name=channel_name,
             category=category,
             overwrites=overwrites,
-            topic=f"Ticket for {interaction.user} | ID: {ticket_id}"
+            topic=None  # We'll set the topic after metadata is created
         )
         # Build metadata
         metadata = {
@@ -2570,16 +2558,11 @@ class TicketCategorySelect:
             "last_activity": datetime.now().isoformat(),
             "form_data": getattr(modal, 'form_data', {})
         }
-        # Store metadata in a pinned message
-        embed = discord.Embed(
-            title=f"📝 Ticket Metadata",
-            description=f"```json\n{json.dumps(metadata, indent=2)}\n```",
-            color=discord.Color.blue()
-        )
-        meta_msg = await channel.send(embed=embed)
-        await meta_msg.pin()
-        # Optionally, store the metadata message ID in the channel topic
-        await channel.edit(topic=str(meta_msg.id))
+        # Send metadata to log channel and store log message ID
+        log_message_id = await create_metadata_message(channel, metadata)
+        metadata["log_message_id"] = log_message_id
+        # Update the channel topic with the latest metadata
+        await channel.edit(topic=f"TICKET_METADATA:{json.dumps(metadata)}")
         # Log ticket creation
         await log_ticket_action(interaction.guild, "Created", metadata, f"Created by: {interaction.user.mention}")
         return channel, metadata
