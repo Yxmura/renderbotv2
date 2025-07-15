@@ -343,10 +343,10 @@ class Polls(commands.Cog):
         question="The poll question",
         option1="First option",
         option2="Second option",
+        duration="Poll duration (e.g., '2h', '30min', '10s', '1d') (required)",
         option3="Third option (optional)",
         option4="Fourth option (optional)",
-        option5="Fifth option (optional)",
-        duration="Poll duration (e.g., '2h', '30min', '10s', '1d')"
+        option5="Fifth option (optional)"
     )
     async def create_poll(
             self,
@@ -354,12 +354,12 @@ class Polls(commands.Cog):
             question: str,
             option1: str,
             option2: str,
+            duration: str,
             option3: str = None,
             option4: str = None,
-            option5: str = None,
-            duration: str = None
+            option5: str = None
     ):
-        # Enforce duration is set
+        # Enforce duration is set (redundant, but keep for safety)
         if not duration:
             await interaction.response.send_message("You must specify a poll duration (e.g., 2min, 30s, 8h, 1d)", ephemeral=True)
             return

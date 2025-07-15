@@ -495,11 +495,11 @@ class Utility(commands.Cog):
         
         await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="announce", description="Send an announcement to the configured channel, pinging the configured role.")
+    @app_commands.command(name="announce", description="Send an announcement to the configured channel (from config), pinging the configured role.")
     @app_commands.describe(subject="The subject/title of the announcement", content="The announcement content")
     async def announce(self, interaction: discord.Interaction, subject: str, content: str):
         """
-        Admin-only command to send an announcement embed to the configured channel, pinging the configured role.
+        Admin-only command to send an announcement embed to the configured channel (from config), pinging the configured role.
         """
         # Check admin permissions
         if not interaction.user.guild_permissions.administrator:

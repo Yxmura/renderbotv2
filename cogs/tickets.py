@@ -2013,10 +2013,13 @@ class Tickets(commands.Cog):
             {"name": "Content Creator", "emoji": "📷", "description": "Content creator applications"},
             {"name": "Other", "emoji": "📝", "description": "Other inquiries"}
         ]
-        
         # Add fields for each category
-        # Send confirmation message
-        await interaction.response.send_message("Ticket claimed!", ephemeral=True)
+        for cat in categories:
+            embed.add_field(name=f"{cat['emoji']} {cat['name']}", value=cat['description'], inline=False)
+        # Send the ticket panel embed and view to the target channel
+        await target_channel.send(embed=embed, view=TicketPanelView())
+        # Send confirmation to the admin
+        await interaction.followup.send(f"Ticket system set up in {target_channel.mention}!", ephemeral=True)
         logger.info(f"Ticket system set up in channel {target_channel.id} by {interaction.user} (ID: {interaction.user.id})")
 
     @app_commands.command(name="ticket_categories", description="Customize ticket categories")
