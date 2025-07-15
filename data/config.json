@@ -1,13 +1,21 @@
 {
-  "admin_roles": [],
-  "ticket_categories": [
+    "admin_roles": [1317607057687576696],
+    "welcome_channel": 1367574829208699020,
+    "goodbye_channel": 1367574829208699020,
+    "boost_channel_id": 1317610953843539978,
+    "auto_roles": [],
+    "ticket_category_id": 1361033906597531811,
+    "ticket_log_channel": 1361035162611220521,
+    "support_role_id": 1325094483695505593,
+    "polls_role": 1368596260340240514,
+    "announce_channel_id": 1317610380700422227,
+    "announce_role_id": 1330576797267660841,
+    "ticket_categories": [
     {"name": "General Support", "emoji": "❓", "description": "Get help with general questions"},
     {"name": "Resource Issue", "emoji": "⚠️", "description": "Report a problem with a resource"},
     {"name": "Partner/Sponsor", "emoji": "💰", "description": "Partner or sponsorship inquiries"},
     {"name": "Staff Application", "emoji": "🔒", "description": "Apply to join our staff team"},
     {"name": "Other", "emoji": "📝", "description": "Other inquiries"}
-  ],
-  "ticket_category_id": "",
-  "ticket_log_channel": "",
-  "ticket_auto_close_hours": 0
+    ],
+    "ticket_auto_close_hours": 24
 }
