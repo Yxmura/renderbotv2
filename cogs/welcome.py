@@ -36,6 +36,11 @@ class Welcome(commands.Cog):
         if config.get("welcome_channel"):
             channel = self.bot.get_channel(int(config["welcome_channel"]))
             if channel:
+                # Update channel name to reflect current member count
+                try:
+                    await channel.edit(name=f"《👋》{member.guild.member_count}")
+                except Exception as e:
+                    print(f"Failed to update channel name: {e}")
                 embed = discord.Embed(
                     title=f"Welcome to {member.guild.name}!",
                     description=f"Welcome to the server! We're now at **{member.guild.member_count}** members!",
@@ -101,6 +106,11 @@ class Welcome(commands.Cog):
         if config.get("goodbye_channel"):
             channel = self.bot.get_channel(int(config["goodbye_channel"]))
             if channel:
+                # Update channel name to reflect current member count
+                try:
+                    await channel.edit(name=f"《👋》{member.guild.member_count}")
+                except Exception as e:
+                    print(f"Failed to update channel name: {e}")
                 embed = discord.Embed(
                     title=f"Goodbye!",
                     description=f"{member.name} has left the server. We're now at **{member.guild.member_count}** members.",
