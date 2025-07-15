@@ -25,14 +25,26 @@ os.makedirs('data', exist_ok=True)
 # --- Discord-Native Metadata Utilities ---
 
 async def get_metadata_from_channel(channel: discord.TextChannel) -> Optional[dict]:
-    """Fetches and parses ticket metadata from the channel topic."""
-    if not channel.topic or not channel.topic.startswith("TICKET_METADATA:"):
+    """Fetches and parses ticket metadata using the log message ID in the topic."""
+    if not channel.topic or not channel.topic.isdigit():
         return None
     try:
-        json_str = channel.topic.split("TICKET_METADATA:", 1)[1].strip()
-        data = json.loads(json_str)
-        return data
-    except (json.JSONDecodeError, IndexError):
+        log_message_id = int(channel.topic)
+        config = load_config()
+        log_channel_id = config.get("ticket_log_channel")
+        if not log_channel_id:
+            return None
+        log_channel = channel.guild.get_channel(int(log_channel_id))
+        if not log_channel:
+            return None
+        log_msg = await log_channel.fetch_message(log_message_id)
+        if not log_msg.embeds:
+            return None
+        embed = log_msg.embeds[0]
+        if "```json" in embed.description:
+            json_str = embed.description.split('```json\n')[1].split('```')[0]
+            return json.loads(json_str)
+    except Exception:
         return None
     return None
 
@@ -41,15 +53,15 @@ async def update_metadata_message(channel: discord.TextChannel, new_metadata: di
     Update the metadata message in the log channel with new metadata.
     """
     try:
+        log_message_id = channel.topic if channel.topic and channel.topic.isdigit() else new_metadata.get("log_message_id")
+        if not log_message_id:
+            return
         config = load_config()
         log_channel_id = config.get("ticket_log_channel")
         if not log_channel_id:
             return
         log_channel = channel.guild.get_channel(int(log_channel_id))
         if not log_channel:
-            return
-        log_message_id = new_metadata.get("log_message_id")
-        if not log_message_id:
             return
         try:
             log_msg = await log_channel.fetch_message(int(log_message_id))
@@ -61,8 +73,8 @@ async def update_metadata_message(channel: discord.TextChannel, new_metadata: di
             color=discord.Color.blue()
         )
         await log_msg.edit(embed=embed)
-        # Update the channel topic with the latest metadata
-        await channel.edit(topic=f"TICKET_METADATA:{json.dumps(new_metadata)}")
+        # Update the channel topic with the log message ID only
+        await channel.edit(topic=str(log_message_id))
     except Exception as e:
         logger.error(f"Failed to update ticket metadata in log channel for ticket {new_metadata.get('ticket_id')}: {e}")
 
@@ -78,8 +90,8 @@ async def create_metadata_message(channel: discord.TextChannel, metadata: dict):
     embed = discord.Embed(title="📝 Ticket Metadata", description=f"```json\n{json.dumps(metadata, indent=2)}\n```", color=discord.Color.blue())
     log_msg = await log_channel.send(embed=embed)
     metadata["log_message_id"] = log_msg.id
-    # Store metadata in the channel topic
-    await channel.edit(topic=f"TICKET_METADATA:{json.dumps(metadata)}")
+    # Store only the log message ID in the channel topic
+    await channel.edit(topic=str(log_msg.id))
     return log_msg.id
 
 # Base form modal for ticket creation
@@ -2525,10 +2537,21 @@ class TicketCategorySelect:
         if not category or not isinstance(category, discord.CategoryChannel):
             await interaction.followup.send("Configured ticket category is invalid. Please contact an admin.", ephemeral=True)
             return None
-        # Generate a unique channel name
-        base_name = f"ticket-{interaction.user.display_name.lower().replace(' ', '-')[:16]}"
+        # Enforce only one open ticket per user
+        for ch in category.channels:
+            if not isinstance(ch, discord.TextChannel):
+                continue
+            metadata = await get_metadata_from_channel(ch)
+            if metadata and metadata.get("user_id") == interaction.user.id and metadata.get("status") == "open":
+                await interaction.followup.send(f"You already have an open ticket: {ch.mention}", ephemeral=True)
+                return None
+        # Generate a unique channel name: username-category-id
+        def sanitize(text):
+            return re.sub(r'[^a-z0-9-]', '-', text.lower().replace(' ', '-'))
+        username = sanitize(interaction.user.display_name)
+        catname = sanitize(modal.category)
         ticket_id = getattr(modal, 'ticket_id', None) or str(uuid.uuid4())[:8]
-        channel_name = f"{base_name}-{ticket_id}"
+        channel_name = f"{username}-{catname}-{ticket_id}"
         # Set permissions
         overwrites = {
             interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
@@ -2536,10 +2559,12 @@ class TicketCategorySelect:
             interaction.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True, manage_roles=True)
         }
         # Add admin/staff roles
+        admin_role_mentions = []
         for role_id in config.get("admin_roles", []):
             role = interaction.guild.get_role(int(role_id))
             if role:
                 overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                admin_role_mentions.append(role.mention)
         # Create the channel
         channel = await interaction.guild.create_text_channel(
             name=channel_name,
@@ -2561,8 +2586,11 @@ class TicketCategorySelect:
         # Send metadata to log channel and store log message ID
         log_message_id = await create_metadata_message(channel, metadata)
         metadata["log_message_id"] = log_message_id
-        # Update the channel topic with the latest metadata
-        await channel.edit(topic=f"TICKET_METADATA:{json.dumps(metadata)}")
+        # Update the channel topic with the log message ID only
+        await channel.edit(topic=str(log_message_id))
+        # Ping admin roles in the ticket channel
+        if admin_role_mentions:
+            await channel.send(' '.join(admin_role_mentions))
         # Log ticket creation
         await log_ticket_action(interaction.guild, "Created", metadata, f"Created by: {interaction.user.mention}")
         return channel, metadata
