@@ -184,7 +184,7 @@ class Utility(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"Error calculating expression: {str(e)}")
     
-    @app_commands.command(name="roll_dice_utility", description="Roll dice (e.g., 2d6, 1d20)")
+    @app_commands.command(name="roll", description="Roll dice (e.g., 2d6, 1d20)")
     @app_commands.describe(dice="Dice notation (e.g., 2d6, 1d20)")
     async def roll(self, interaction: discord.Interaction, dice: str):
         """Roll dice (e.g., 2d6, 1d20)"""
@@ -438,7 +438,7 @@ class Utility(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"Error generating random number: {str(e)}")
     
-    @app_commands.command(name="choose_utility", description="Choose a random option from a list")
+    @app_commands.command(name="choose", description="Choose a random option from a list")
     @app_commands.describe(options="Options to choose from, separated by commas")
     async def choose(self, interaction: discord.Interaction, options: str):
         """Choose a random option from a list"""

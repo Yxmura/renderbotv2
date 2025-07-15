@@ -64,7 +64,7 @@ class Rules(commands.Cog):
         if interaction.guild.icon:
             embed.set_thumbnail(url=interaction.guild.icon.url)
         
-        # Send the rules directly to the channel without showing who executed the command
+        # Send the message with the view containing buttons
         await interaction.response.send_message(embed=embed, view=RulesView())
 
 async def setup(bot):

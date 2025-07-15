@@ -1,15 +1,22 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+import json
 import asyncio
 import random
-import logging
 from datetime import datetime, timedelta
-from supabase_client import get_db
-from bot import load_data, save_data
 
-# Set up logging
-logger = logging.getLogger(__name__)
+
+# Load data
+def load_data(file):
+    with open(f'data/{file}.json', 'r') as f:
+        return json.load(f)
+
+
+def save_data(file, data):
+    with open(f'data/{file}.json', 'w') as f:
+        json.dump(data, f, indent=4)
+
 
 # Check if user has admin role
 def is_admin(interaction):
@@ -30,140 +37,115 @@ def is_admin(interaction):
 class GiveawayView(discord.ui.View):
     def __init__(self, giveaway_id):
         super().__init__(timeout=None)
-        self.giveaway_id = str(giveaway_id)
-        self.db = get_db()
+        self.giveaway_id = giveaway_id
 
     @discord.ui.button(label="Enter Giveaway", style=discord.ButtonStyle.primary, emoji="🎉", custom_id="enter_giveaway")
     async def enter_giveaway(self, interaction, button):
-        # Load giveaway data from Supabase
+        # Load giveaway data
+        giveaways = load_data('giveaways')
+        giveaway = giveaways.get(str(self.giveaway_id))
+
+        if not giveaway:
+            await interaction.response.send_message("This giveaway no longer exists!", ephemeral=True)
+            return
+            
+        # Check role requirements if any
+        if 'required_role' in giveaway and giveaway['required_role']:
+            required_role_id = int(giveaway['required_role'])
+            bypass_roles = [int(role_id) for role_id in giveaway.get('bypass_roles', [])]
+            
+            # Check if user has required role or any bypass role
+            user_roles = [role.id for role in interaction.user.roles]
+            has_required_role = required_role_id in user_roles
+            has_bypass_role = any(role_id in user_roles for role_id in bypass_roles)
+            
+            if not (has_required_role or has_bypass_role):
+                required_role = interaction.guild.get_role(required_role_id)
+                role_name = required_role.mention if required_role else f"Role ID: {required_role_id}"
+                
+                if bypass_roles:
+                    bypass_mentions = ", ".join([f"<@&{role_id}>" for role_id in bypass_roles])
+                    message = (
+                        f"❌ You need the {role_name} role to enter this giveaway!\n"
+                        f"*The following roles bypass this requirement: {bypass_mentions}*"
+                    )
+                else:
+                    message = f"❌ You need the {role_name} role to enter this giveaway!"
+                
+                await interaction.response.send_message(message, ephemeral=True)
+                return
+
+        # Check if giveaway is still active
+        if giveaway["status"] != "active":
+            await interaction.response.send_message("This giveaway has ended!", ephemeral=True)
+            return
+
+        # Check if user already entered
+        user_id = str(interaction.user.id)
+        if user_id in giveaway["entries"]:
+            # User wants to leave the giveaway
+            giveaway["entries"].remove(user_id)
+            await interaction.response.send_message("You have withdrawn from the giveaway!", ephemeral=True)
+        else:
+            # User wants to enter the giveaway
+            giveaway["entries"].append(user_id)
+            await interaction.response.send_message("You have entered the giveaway! Good luck! 🍀", ephemeral=True)
+
+        # Update entry count in the embed
         try:
-            giveaway = await self.db.get_giveaway(self.giveaway_id)
-            if not giveaway:
-                await interaction.response.send_message("This giveaway no longer exists!", ephemeral=True)
-                return
-            
-            # Check role requirements if any
-            if giveaway.get('required_role'):
-                required_role_id = int(giveaway['required_role'])
-                bypass_roles = [int(role_id) for role_id in (giveaway.get('bypass_roles') or [])]
-                
-                # Check if user has required role or any bypass role
-                user_roles = [role.id for role in interaction.user.roles]
-                has_required_role = required_role_id in user_roles
-                has_bypass_role = any(role_id in user_roles for role_id in bypass_roles)
-                
-                if not (has_required_role or has_bypass_role):
-                    required_role = interaction.guild.get_role(required_role_id)
-                    role_name = required_role.mention if required_role else f"Role ID: {required_role_id}"
-                    
-                    if bypass_roles:
-                        bypass_mentions = ", ".join([f"<@&{role_id}>" for role_id in bypass_roles])
-                        message = (
-                            f"❌ You need the {role_name} role to enter this giveaway!\n"
-                            f"*The following roles bypass this requirement: {bypass_mentions}*"
-                        )
-                    else:
-                        message = f"❌ You need the {role_name} role to enter this giveaway!"
-                    
-                    await interaction.response.send_message(message, ephemeral=True)
-                    return
+            channel = interaction.guild.get_channel(giveaway["channel_id"])
+            message = await channel.fetch_message(giveaway["message_id"])
 
-            # Check if giveaway is still active
-            if giveaway["status"] != "active":
-                await interaction.response.send_message("This giveaway has ended!", ephemeral=True)
-                return
+            embed = message.embeds[0]
+            embed.set_field_at(
+                0,
+                name="Entries",
+                value=f"{len(giveaway['entries'])} {('entry' if len(giveaway['entries']) == 1 else 'entries')}",
+                inline=True
+            )
 
-            # Toggle user entry in the giveaway
-            user_id = str(interaction.user.id)
-            entries = set(giveaway.get('entries', []))
-            
-            if user_id in entries:
-                # User wants to leave the giveaway
-                entries.remove(user_id)
-                await interaction.response.send_message("You have withdrawn from the giveaway!", ephemeral=True)
-            else:
-                # User wants to enter the giveaway
-                entries.add(user_id)
-                await interaction.response.send_message("You have entered the giveaway! Good luck! 🍀", ephemeral=True)
-
-            # Update the giveaway with new entries
-            await self.db.update_giveaway(self.giveaway_id, {'entries': list(entries)})
-
-            # Update entry count in the embed
-            try:
-                channel = interaction.guild.get_channel(int(giveaway["channel_id"]))
-                if not channel:
-                    return
-                    
-                message = await channel.fetch_message(int(giveaway["message_id"]))
-
-                embed = message.embeds[0]
-                entry_count = len(entries)
-                embed.set_field_at(
-                    0,
-                    name="Entries",
-                    value=f"{entry_count} {('entry' if entry_count == 1 else 'entries')}",
-                    inline=True
-                )
-
-                await message.edit(embed=embed)
-            except Exception as e:
-                logger.error(f"Error updating giveaway message: {e}")
-                
+            await message.edit(embed=embed)
         except Exception as e:
-            logger.error(f"Error in enter_giveaway: {e}")
-            try:
-                await interaction.response.send_message("An error occurred while processing your entry. Please try again.", ephemeral=True)
-            except:
-                pass
+            print(f"Error updating giveaway message: {e}")
+
+        # Save updated giveaway data
+        save_data('giveaways', giveaways)
 
 
 class Giveaways(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db = get_db()
-        
+
+        # Create giveaways.json if it doesn't exist
+        try:
+            load_data('giveaways')
+        except:
+            save_data('giveaways', {})
+
         # Start giveaway checking task
         self.giveaway_task = self.bot.loop.create_task(self.check_giveaways())
-        
-        # Create necessary tables if they don't exist
-        self.bot.loop.create_task(self.initialize_tables())
 
     def cog_unload(self):
         # Cancel the task when the cog is unloaded
         self.giveaway_task.cancel()
-
-    async def initialize_tables(self):
-        """Initialize database tables if they don't exist."""
-        try:
-            # This will be handled by the Supabase client
-            pass
-        except Exception as e:
-            logger.error(f"Error initializing database tables: {e}")
 
     async def check_giveaways(self):
         await self.bot.wait_until_ready()
 
         while not self.bot.is_closed():
             try:
-                # Get all active giveaways from Supabase
-                result = self.db.client.table('giveaways') \
-                    .select('*') \
-                    .eq('status', 'active') \
-                    .execute()
-                
-                now = datetime.utcnow()
-                
-                for giveaway in result.data:
-                    try:
+                giveaways = load_data('giveaways')
+                now = datetime.now()
+
+                for giveaway_id, giveaway in list(giveaways.items()):
+                    if giveaway["status"] == "active":
                         end_time = datetime.fromisoformat(giveaway["end_time"])
+
                         if now >= end_time:
-                            await self.end_giveaway(str(giveaway['id']))
-                    except Exception as e:
-                        logger.error(f"Error processing giveaway {giveaway.get('id')}: {e}")
-                        
+                            # End the giveaway
+                            await self.end_giveaway(giveaway_id)
             except Exception as e:
-                logger.error(f"Error in check_giveaways: {e}")
+                print(f"Error checking giveaways: {e}")
 
             # Check every 30 seconds
             await asyncio.sleep(30)
@@ -171,51 +153,39 @@ class Giveaways(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         # Register persistent views for active giveaways
-        try:
-            result = self.db.client.table('giveaways') \
-                .select('id') \
-                .eq('status', 'active') \
-                .execute()
-                
-            for giveaway in result.data:
-                self.bot.add_view(GiveawayView(str(giveaway['id'])))
-                
-            logger.info(f"Registered {len(result.data)} active giveaways")
-            
-        except Exception as e:
-            logger.error(f"Error registering giveaway views: {e}")
+        giveaways = load_data('giveaways')
+
+        for giveaway_id in giveaways:
+            self.bot.add_view(GiveawayView(giveaway_id))
 
     async def end_giveaway(self, giveaway_id):
+        giveaways = load_data('giveaways')
+        giveaway = giveaways[giveaway_id]
+
+        # Mark as ended
+        giveaway["status"] = "ended"
+        giveaway["ended_at"] = datetime.now().isoformat()
+
+        # Select winner(s)
+        winners = []
+        entries = giveaway["entries"]
+        winner_count = min(giveaway["winner_count"], len(entries))
+
+        if entries and winner_count > 0:
+            winners = random.sample(entries, winner_count)
+            giveaway["winners"] = winners
+
+        save_data('giveaways', giveaways)
+
+        # Send winner announcement
         try:
-            # Get the giveaway from Supabase
-            giveaway = await self.db.get_giveaway(giveaway_id)
-            if not giveaway:
-                logger.error(f"Giveaway {giveaway_id} not found")
-                return
-                
-            # Select winner(s)
-            winners = []
-            entries = giveaway.get('entries', [])
-            winner_count = min(giveaway.get('winner_count', 1), len(entries))
-
-            if entries and winner_count > 0:
-                winners = random.sample(entries, winner_count)
-            
-            # Update the giveaway in Supabase
-            await self.db.update_giveaway(giveaway_id, {
-                'status': 'ended',
-                'ended_at': datetime.utcnow().isoformat(),
-                'winners': winners
-            })
-
-            # Send winner announcement
-            channel = self.bot.get_channel(int(giveaway["channel_id"]))
+            channel = self.bot.get_channel(giveaway["channel_id"])
             if not channel:
-                logger.error(f"Channel {giveaway['channel_id']} not found")
                 return
 
+            # Get the original message
             try:
-                message = await channel.fetch_message(int(giveaway["message_id"]))
+                message = await channel.fetch_message(giveaway["message_id"])
 
                 # Update the embed
                 embed = message.embeds[0]
@@ -225,7 +195,7 @@ class Giveaways(commands.Cog):
                 # Update or add the winners field
                 if winners:
                     winners_text = "\n".join([f"<@{winner_id}>" for winner_id in winners])
-                    
+
                     # Find if there's already a Winners field
                     winner_field_index = None
                     for i, field in enumerate(embed.fields):
@@ -233,43 +203,15 @@ class Giveaways(commands.Cog):
                             winner_field_index = i
                             break
 
-                    winners_field = discord.EmbedField(
-                        name=f"🎉 {'Winner' if len(winners) == 1 else 'Winners'}",
-                        value=winners_text,
-                        inline=False
-                    )
-
                     if winner_field_index is not None:
-                        embed.set_field_at(winner_field_index, 
-                                        name=winners_field.name, 
-                                        value=winners_field.value, 
-                                        inline=winners_field.inline)
+                        embed.set_field_at(winner_field_index, name="Winners", value=winners_text, inline=False)
                     else:
-                        embed.add_field(
-                            name=winners_field.name,
-                            value=winners_field.value,
-                            inline=winners_field.inline
-                        )
-                
-                # Update footer and timestamp
-                embed.set_footer(text=f"Giveaway ID: {giveaway_id} • Ended at")
-                embed.timestamp = datetime.utcnow()
-                
-                # Update the message with the new embed
-                await message.edit(embed=embed, view=None)
-                
-                # Announce the winners
-                if winners:
-                    winners_mentions = " ".join([f"<@{winner_id}>" for winner_id in winners])
-                    await channel.send(
-                        f"🎉 Congratulations {winners_mentions}! "
-                        f"You won the **{giveaway['prize']}**! 🎊"
-                    )
+                        embed.add_field(name="Winners", value=winners_text, inline=False)
                 else:
-                    await channel.send(
-                        f"🎉 The giveaway for **{giveaway['prize']}** has ended! "
-                        f"No one entered, so there are no winners. 😢"
-                    )
+                    embed.add_field(name="Winners", value="No valid entries for this giveaway!", inline=False)
+
+                embed.set_footer(text=f"Giveaway ID: {giveaway_id} • Ended at")
+                embed.timestamp = datetime.now()
 
                 # Update the message
                 await message.edit(embed=embed, view=None)

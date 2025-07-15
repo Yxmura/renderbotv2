@@ -100,10 +100,15 @@ class Roles(commands.Cog):
                 inline=False
             )
         
-        # Add footer with server name
-        embed.set_footer(text=interaction.guild.name)
+        # Add footer with instructions
+        embed.set_footer(
+            text=(
+                "🔧 To claim a donation-based role, please contact staff or use the ticket system.\n"
+                "📨 For Content Creator access, provide proof via a support ticket."
+            )
+        )
         
-        # Send the roles directly to the channel without showing who executed the command
+        # Send the embed
         await interaction.response.send_message(embed=embed)
 
 async def setup(bot):
