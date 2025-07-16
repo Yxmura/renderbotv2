@@ -1,4 +1,5 @@
 {
-    "tickets": {},
-    "counter": 0
+  "tickets": {},
+  "reaction_roles": {},
+  "blacklist": []
 }
