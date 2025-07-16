@@ -7,327 +7,175 @@ import re
 from datetime import datetime, timedelta
 from bot import load_data
 
-
-# Load data
-def load_data(file):
-    with open(f'data/{file}.json', 'r') as f:
-        return json.load(f)
-
-
-def save_data(file, data):
-    with open(f'data/{file}.json', 'w') as f:
-        json.dump(data, f, indent=4)
-
-
-class PollView(discord.ui.View):
-    def __init__(self, poll_id, options):
+class ReactionPollView(discord.ui.View):
+    def __init__(self, poll_id: str, options: list):
         super().__init__(timeout=None)
         self.poll_id = poll_id
         self.options = options
+        self.emojis = ["👍", "👎"] if len(options) == 2 else ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"][:len(options)]
 
-        # Add buttons for each option
-        for i, option in enumerate(options):
-            # Create a button for each option
-            button = discord.ui.Button(
-                label=option,
-                custom_id=f"poll:{poll_id}:{i}",
-                style=discord.ButtonStyle.primary
-            )
-            button.callback = self.vote_callback
-            self.add_item(button)
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return True
 
-    async def vote_callback(self, interaction):
-        # Get the option index from the custom_id
-        option_index = int(interaction.data["custom_id"].split(":")[-1])
+class ReactionPollManager:
+    def __init__(self, bot):
+        self.bot = bot
+        self.polls = {}
+        self.load_polls()
 
-        # Load poll data
-        polls = load_data('polls')
-        poll = polls.get(str(self.poll_id))
-
-        if not poll:
-            await interaction.response.send_message("This poll no longer exists!", ephemeral=True)
-            return
-
-        # Check if poll is closed
-        if poll.get("closed", False):
-            await interaction.response.send_message("This poll is closed!", ephemeral=True)
-            return
-
-        # Check if user has already voted
-        user_id = str(interaction.user.id)
-
-        # Remove previous vote if exists
-        for votes in poll["votes"].values():
-            if user_id in votes:
-                votes.remove(user_id)
-
-        # Add new vote
-        if str(option_index) not in poll["votes"]:
-            poll["votes"][str(option_index)] = []
-
-        poll["votes"][str(option_index)].append(user_id)
-
-        # Save poll data
-        save_data('polls', polls)
-
-        # Update poll message
-        await self.update_poll_message(interaction)
-
-        # Send confirmation
-        await interaction.response.send_message(f"You voted for '{self.options[option_index]}'!", ephemeral=True)
-
-    async def update_poll_message(self, interaction):
-        # Load poll data
-        polls = load_data('polls')
-        poll = polls.get(str(self.poll_id))
-
-        if not poll:
-            return
-
-        # Count votes
-        total_votes = sum(len(votes) for votes in poll["votes"].values())
-
-        # Create embed with gradient color based on time remaining
-        time_color = discord.Color.blue()
-        if "end_time" in poll:
-            end_time = datetime.fromisoformat(poll["end_time"])
-            time_left = (end_time - datetime.now()).total_seconds()
-            # Gradient from blue to red as time runs out
-            if time_left < 3600:  # < 1 hour
-                time_color = discord.Color.red()
-            elif time_left < 86400:  # < 1 day
-                time_color = discord.Color.orange()
-
-        embed = discord.Embed(
-            title=f"📊 {poll['question']}",
-            color=time_color
-        )
-        
-        # Add total votes and time remaining to description
-        description = f"🗳️ **Total Votes:** {total_votes}\n"
-        
-        if "end_time" in poll:
-            end_time = datetime.fromisoformat(poll["end_time"])
-            now = datetime.now()
-            if end_time > now:
-                time_left = end_time - now
-                hours, remainder = divmod(time_left.seconds, 3600)
-                minutes, _ = divmod(remainder, 60)
-                time_str = f"{time_left.days}d {hours}h {minutes}m" if time_left.days > 0 else f"{hours}h {minutes}m"
-                description += f"⏳ **Time Remaining:** {time_str}\n"
-            else:
-                description += "⏰ **Poll has ended**\n"
-        
-        embed.description = description
-
-        # Define colors for options based on position
-        option_colors = [
-            0x3498db,  # Blue
-            0x2ecc71,  # Green
-            0xe74c3c,  # Red
-            0xf1c40f,  # Yellow
-            0x9b59b6,  # Purple
-            0x1abc9c   # Turquoise
-        ]
-
-        # Add fields for each option
-        for i, option in enumerate(self.options):
-            votes = len(poll["votes"].get(str(i), []))
-            percentage = (votes / total_votes * 100) if total_votes > 0 else 0
-
-            # Create progress bar with emoji
-            filled_length = int(10 * percentage / 100)
-            bar = "🟦" * filled_length + "⬜" * (10 - filled_length)
-            
-            # Get color for this option
-            color = option_colors[i % len(option_colors)]
-            
-            # Add field with emoji and formatting
-            embed.add_field(
-                name=f"{i+1}. {option}",
-                value=(
-                    f"{bar} **{percentage:.1f}%**\n"
-                    f"👥 **{votes}** vote{'s' if votes != 1 else ''} • "
-                    f"🎯 {percentage:.1f}% of total"
-                ),
-                inline=False
-            )
-
-        # Add end time if set
-        if "end_time" in poll:
-            end_time = datetime.fromisoformat(poll["end_time"])
-            now = datetime.now()
-
-            if end_time > now:
-                time_left = end_time - now
-                hours, remainder = divmod(time_left.seconds, 3600)
-                minutes, seconds = divmod(remainder, 60)
-
-                time_str = f"{time_left.days}d {hours}h {minutes}m {seconds}s"
-                embed.set_footer(text=f"Poll ends in: {time_str}")
-            else:
-                embed.set_footer(text="Poll has ended")
-
-        # Get the message
+    def load_polls(self):
         try:
-            channel = interaction.guild.get_channel(poll["channel_id"])
-            message = await channel.fetch_message(poll["message_id"])
-            await message.edit(embed=embed)
-        except:
-            pass  # Message not found or can't be edited
+            with open('data/polls.json', 'r') as f:
+                self.polls = json.load(f)
+        except FileNotFoundError:
+            self.polls = {}
 
+    def save_polls(self):
+        with open('data/polls.json', 'w') as f:
+            json.dump(self.polls, f, indent=2)
+
+    def create_poll(self, question: str, options: list, duration_minutes: int, channel_id: int, author_id: int) -> str:
+        poll_id = str(len(self.polls) + 1)
+        end_time = (datetime.now() + timedelta(minutes=duration_minutes)).isoformat()
+        
+        self.polls[poll_id] = {
+            "question": question,
+            "options": options,
+            "votes": {str(i): [] for i in range(len(options))},
+            "channel_id": channel_id,
+            "message_id": None,
+            "author_id": author_id,
+            "created_at": datetime.now().isoformat(),
+            "end_time": end_time,
+            "closed": False,
+            "type": "reaction"
+        }
+        self.save_polls()
+        return poll_id
+
+    def get_poll(self, poll_id: str) -> dict:
+        return self.polls.get(poll_id)
+
+    def add_vote(self, poll_id: str, option_index: int, user_id: int):
+        if poll_id not in self.polls or self.polls[poll_id]["closed"]:
+            return False
+        
+        user_str = str(user_id)
+        
+        for option_votes in self.polls[poll_id]["votes"].values():
+            if user_str in option_votes:
+                option_votes.remove(user_str)
+        
+        self.polls[poll_id]["votes"][str(option_index)].append(user_str)
+        self.save_polls()
+        return True
+
+    def close_poll(self, poll_id: str):
+        if poll_id in self.polls:
+            self.polls[poll_id]["closed"] = True
+            self.save_polls()
 
 class Polls(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.active_polls = {}
-
-        # Start poll end checking task
-        self.poll_task = self.bot.loop.create_task(self.check_polls())
+        self.poll_manager = ReactionPollManager(bot)
+        self.check_polls.start()
 
     def cog_unload(self):
-        # Cancel the task when the cog is unloaded
-        self.poll_task.cancel()
+        self.check_polls.cancel()
 
+    @tasks.loop(minutes=1)
     async def check_polls(self):
         await self.bot.wait_until_ready()
+        
+        now = datetime.now()
+        for poll_id, poll in list(self.poll_manager.polls.items()):
+            if not poll.get("closed", False) and poll.get("end_time"):
+                end_time = datetime.fromisoformat(poll["end_time"])
+                if now >= end_time:
+                    await self.end_poll(poll_id)
 
-        while not self.bot.is_closed():
-            try:
-                polls = load_data('polls')
-                now = datetime.now().isoformat()
-
-                for poll_id, poll in list(polls.items()):
-                    if "end_time" in poll and poll["end_time"] <= now and not poll.get("closed", False):
-                        # Close the poll
-                        poll["closed"] = True
-                        save_data('polls', polls)
-
-                        # Send results
-                        await self.send_poll_results(poll_id)
-            except Exception as e:
-                print(f"Error checking polls: {e}")
-
-            # Check every minute
-            await asyncio.sleep(60)
-
-    async def send_poll_results(self, poll_id):
-        polls = load_data('polls')
-        poll = polls.get(str(poll_id))
-
-        if not poll:
+    async def end_poll(self, poll_id: str):
+        poll = self.poll_manager.get_poll(poll_id)
+        if not poll or poll["closed"]:
             return
 
+        self.poll_manager.close_poll(poll_id)
+        
         try:
-            # Get the channel and message
             channel = self.bot.get_channel(poll["channel_id"])
             if not channel:
                 return
 
-            # Count votes
-            total_votes = sum(len(votes) for votes in poll["votes"].values())
+            message = await channel.fetch_message(poll["message_id"])
+            if not message:
+                return
 
-            # Create results embed with gold color for completed polls
+            await self.send_poll_results(poll_id, message, poll)
+            
+            await message.clear_reactions()
+            
             embed = discord.Embed(
-                title=f"🏆 Poll Results: {poll['question']}",
-                color=0xf1c40f  # Gold color
+                title=f"🏆 Poll Ended: {poll['question']}",
+                description="This poll has ended. Results are shown below.",
+                color=discord.Color.gold()
             )
-            
-            # Add total votes and duration to description
-            description = f"🗳️ **Total Votes:** {total_votes}\n"
-            if "created_at" in poll and "end_time" in poll:
-                start = datetime.fromisoformat(poll["created_at"])
-                end = datetime.fromisoformat(poll["end_time"])
-                duration = end - start
-                hours, remainder = divmod(duration.seconds, 3600)
-                minutes, _ = divmod(remainder, 60)
-                duration_str = f"{duration.days}d {hours}h {minutes}m" if duration.days > 0 else f"{hours}h {minutes}m"
-                description += f"⏱️ **Duration:** {duration_str}\n"
-            
-            embed.description = description
-
-            # Define medal emojis for top 3 options
-            medals = ["🥇", "🥈", "🥉"]
-            
-            # Get options sorted by vote count (descending)
-            options = poll["options"]
-            sorted_options = sorted(
-                [(i, len(poll["votes"].get(str(i), []))) for i in range(len(options))],
-                key=lambda x: x[1],
-                reverse=True
-            )
-            
-            # Add fields for each option in order of votes
-            for rank, (i, votes) in enumerate(sorted_options):
-                option = options[i]
-                percentage = (votes / total_votes * 100) if total_votes > 0 else 0
-                
-                # Create progress bar with emoji
-                filled_length = int(10 * percentage / 100)
-                bar = "🟨" * filled_length + "⬜" * (10 - filled_length)
-                
-                # Add medal for top 3
-                medal = f"{medals[rank]} " if rank < 3 else ""
-                
-                # Add field with ranking and formatting
-                embed.add_field(
-                    name=f"{medal}{option}",
-                    value=(
-                        f"{bar} **{percentage:.1f}%**\n"
-                        f"👥 **{votes}** vote{'s' if votes != 1 else ''} • "
-                        f"🎯 {percentage:.1f}% of total"
-                    ),
-                    inline=False
-                )
-
-            embed.set_footer(text=f"Poll ID: {poll_id}")
-
-            # Send results
-            await channel.send(embed=embed)
-
-            # Update original message
-            try:
-                message = await channel.fetch_message(poll["message_id"])
-
-                # Create updated embed
-                original_embed = message.embeds[0]
-                original_embed.title = f"[CLOSED] {original_embed.title}"
-                original_embed.set_footer(text="This poll has ended")
-
-                await message.edit(embed=original_embed, view=None)
-            except:
-                pass  # Message not found or can't be edited
+            await message.edit(embed=embed)
 
         except Exception as e:
-            print(f"Error sending poll results: {e}")
+            print(f"Error ending poll {poll_id}: {e}")
 
-    @commands.Cog.listener()
-    async def on_ready(self):
-        # Register persistent views for active polls
-        polls = load_data('polls')
-
-        for poll_id, poll in polls.items():
-            if not poll.get("closed", False):
-                view = PollView(poll_id, poll["options"])
-                self.bot.add_view(view)
+    async def send_poll_results(self, poll_id: str, message: discord.Message, poll: dict):
+        total_votes = sum(len(votes) for votes in poll["votes"].values())
+        
+        embed = discord.Embed(
+            title=f"🏆 Poll Results: {poll['question']}",
+            color=discord.Color.gold()
+        )
+        
+        embed.add_field(name="📊 Total Votes", value=str(total_votes), inline=True)
+        
+        duration = datetime.fromisoformat(poll["end_time"]) - datetime.fromisoformat(poll["created_at"])
+        hours, remainder = divmod(duration.seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
+        duration_str = f"{duration.days}d {hours}h {minutes}m" if duration.days > 0 else f"{hours}h {minutes}m"
+        embed.add_field(name="⏱️ Duration", value=duration_str, inline=True)
+        
+        medals = ["🥇", "🥈", "🥉"]
+        sorted_options = sorted(
+            [(i, len(poll["votes"][str(i)])) for i in range(len(poll["options"]))],
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        for rank, (option_index, votes) in enumerate(sorted_options):
+            option = poll["options"][option_index]
+            percentage = (votes / total_votes * 100) if total_votes > 0 else 0
+            
+            filled_length = int(20 * percentage / 100)
+            bar = "█" * filled_length + "░" * (20 - filled_length)
+            
+            medal = medals[rank] if rank < 3 else "📊"
+            
+            embed.add_field(
+                name=f"{medal} {option}",
+                value=f"{bar} **{percentage:.1f}%**\n👥 **{votes}** vote{'s' if votes != 1 else ''}",
+                inline=False
+            )
+        
+        embed.set_footer(text=f"Poll ID: {poll_id}")
+        await message.channel.send(embed=embed)
 
     def parse_duration(self, duration_str: str) -> int:
-        """Parse duration string like '2h', '30min', '10s', '1d' into minutes"""
-        if not duration_str:
-            return None
-            
-        # Remove any whitespace and convert to lowercase
         duration_str = duration_str.lower().replace(' ', '')
         
-        # Define patterns for different time units
         patterns = {
-            'd': 1440,  # days to minutes
-            'h': 60,    # hours to minutes
-            'm': 1,     # minutes
-            's': 1/60   # seconds to minutes
+            'd': 1440,
+            'h': 60,
+            'm': 1,
+            's': 1/60
         }
         
-        # Try to match the pattern
         match = re.match(r'^(\d+)([dhms])', duration_str)
         if not match:
             raise ValueError("Invalid duration format. Use formats like '2h', '30min', '10s', or '1d'")
@@ -335,43 +183,35 @@ class Polls(commands.Cog):
         value = int(match.group(1))
         unit = match.group(2)
         
-        # Convert to minutes
         return int(value * patterns[unit])
 
-    @app_commands.command(name="poll", description="Create a poll")
+    @app_commands.command(name="poll", description="Create a reaction-based poll")
     @app_commands.describe(
         question="The poll question",
         option1="First option",
         option2="Second option",
-        duration="Poll duration (e.g., '2h', '30min', '10s', '1d') (required)",
+        duration="Poll duration (e.g., '2h', '30min', '10s', '1d')",
         option3="Third option (optional)",
         option4="Fourth option (optional)",
         option5="Fifth option (optional)"
     )
     async def create_poll(
-            self,
-            interaction,
-            question: str,
-            option1: str,
-            option2: str,
-            duration: str,
-            option3: str = None,
-            option4: str = None,
-            option5: str = None
+        self,
+        interaction: discord.Interaction,
+        question: str,
+        option1: str,
+        option2: str,
+        duration: str,
+        option3: str = None,
+        option4: str = None,
+        option5: str = None
     ):
-        # Enforce duration is set (redundant, but keep for safety)
-        if not duration:
-            await interaction.response.send_message("You must specify a poll duration (e.g., 2min, 30s, 8h, 1d)", ephemeral=True)
-            return
-        # Parse duration
-        duration_minutes = None
         try:
             duration_minutes = self.parse_duration(duration)
         except ValueError as e:
             await interaction.response.send_message(str(e), ephemeral=True)
             return
-        
-        # Collect options
+
         options = [option1, option2]
         if option3:
             options.append(option3)
@@ -380,99 +220,141 @@ class Polls(commands.Cog):
         if option5:
             options.append(option5)
 
-        # Create a new poll
-        polls = load_data('polls')
+        if len(options) > 10:
+            await interaction.response.send_message("Maximum 5 options allowed for reaction polls.", ephemeral=True)
+            return
 
-        # Generate a new poll ID
-        poll_id = str(len(polls) + 1)
+        poll_id = self.poll_manager.create_poll(question, options, duration_minutes, interaction.channel_id, interaction.user.id)
 
-        # Calculate end time if duration is provided
-        end_time = None
-        if duration_minutes:
-            end_time = (datetime.now() + timedelta(minutes=duration_minutes)).isoformat()
-
-        # Create poll view
-        view = PollView(poll_id, options)
-
-        # Create initial embed (enhanced)
         embed = discord.Embed(
             title=f"📊 {question}",
-            description="Vote by clicking a button below!",
-            color=discord.Color.blurple()
+            description="React with the corresponding emoji to vote!",
+            color=discord.Color.blue()
         )
-        embed.set_thumbnail(url=interaction.guild.icon.url if interaction.guild.icon else discord.Embed.Empty)
-        embed.add_field(name="Status", value="🟢 **Open**", inline=True)
-        embed.add_field(name="Duration", value=duration, inline=True)
-        embed.add_field(name="Total Options", value=str(len(options)), inline=True)
-        embed.add_field(name="\u200b", value="\u200b", inline=False)
-        for i, option in enumerate(options):
-            embed.add_field(name=f"Option {i + 1}", value=f"{option}", inline=False)
-        embed.set_footer(text="Poll created by {} • Ends in: {}".format(interaction.user.display_name, duration))
 
-        # Get poll updates role from config
-        config = load_data('config')
-        poll_updates_role_id = config.get('polls_role', '')
-        content = None
-        if poll_updates_role_id and str(poll_updates_role_id).isdigit():
-            content = f'<@&{poll_updates_role_id}> New poll created!'
+        emojis = ["👍", "👎"] if len(options) == 2 else ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"][:len(options)]
+
+        for i, (emoji, option) in enumerate(zip(emojis, options)):
+            embed.add_field(name=f"{emoji} {option}", value="0 votes (0.0%)", inline=False)
+
+        end_time = datetime.fromisoformat(self.poll_manager.polls[poll_id]["end_time"])
+        time_left = end_time - datetime.now()
+        hours, remainder = divmod(time_left.seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
+        time_str = f"{time_left.days}d {hours}h {minutes}m" if time_left.days > 0 else f"{hours}h {minutes}m"
         
-        # Send poll message with role mention
-        if content:
-            poll_message = await interaction.channel.send(content=content, embed=embed, view=view)
-        else:
-            poll_message = await interaction.channel.send(embed=embed, view=view)
-        # Remove any response to the user
-        # Save poll data
-        polls[poll_id] = {
-            "question": question,
-            "options": options,
-            "votes": {},
-            "channel_id": interaction.channel.id,
-            "message_id": poll_message.id,
-            "created_by": interaction.user.id,
-            "created_at": datetime.now().isoformat()
-        }
-        if end_time:
-            polls[poll_id]["end_time"] = end_time
-        save_data('polls', polls)
+        embed.set_footer(text=f"Poll ends in: {time_str} • Poll ID: {poll_id}")
+
+        await interaction.response.send_message(embed=embed)
+        message = await interaction.original_response()
+
+        self.poll_manager.polls[poll_id]["message_id"] = message.id
+        self.poll_manager.save_polls()
+
+        for emoji in emojis[:len(options)]:
+            await message.add_reaction(emoji)
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        if payload.user_id == self.bot.user.id:
+            return
+
+        poll = None
+        poll_id = None
+        
+        for pid, p in self.poll_manager.polls.items():
+            if p.get("message_id") == payload.message_id and not p.get("closed", False):
+                poll = p
+                poll_id = pid
+                break
+        
+        if not poll:
+            return
+
+        emojis = ["👍", "👎"] if len(poll["options"]) == 2 else ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"][:len(poll["options"])]
+        
+        if str(payload.emoji) not in emojis:
+            return
+
+        channel = self.bot.get_channel(payload.channel_id)
+        if not channel:
+            return
+
+        message = await channel.fetch_message(payload.message_id)
+        if not message:
+            return
+
+        await message.remove_reaction(payload.emoji, payload.member)
+
+        option_index = emojis.index(str(payload.emoji))
+        self.poll_manager.add_vote(poll_id, option_index, payload.user_id)
+        
+        await self.update_poll_display(poll_id, message)
+
+    async def update_poll_display(self, poll_id: str, message: discord.Message):
+        poll = self.poll_manager.get_poll(poll_id)
+        if not poll:
+            return
+
+        total_votes = sum(len(votes) for votes in poll["votes"].values())
+        emojis = ["👍", "👎"] if len(poll["options"]) == 2 else ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"][:len(poll["options"])]
+
+        embed = discord.Embed(
+            title=f"📊 {poll['question']}",
+            description="React with the corresponding emoji to vote!",
+            color=discord.Color.blue()
+        )
+
+        for i, (emoji, option) in enumerate(zip(emojis, poll["options"])):
+            votes = len(poll["votes"][str(i)])
+            percentage = (votes / total_votes * 100) if total_votes > 0 else 0
+            
+            filled_length = int(10 * percentage / 100)
+            bar = "█" * filled_length + "░" * (10 - filled_length)
+            
+            embed.add_field(
+                name=f"{emoji} {option}",
+                value=f"{bar} **{percentage:.1f}%** ({votes} votes)",
+                inline=False
+            )
+
+        end_time = datetime.fromisoformat(poll["end_time"])
+        time_left = end_time - datetime.now()
+        hours, remainder = divmod(time_left.seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
+        time_str = f"{time_left.days}d {hours}h {minutes}m" if time_left.days > 0 else f"{hours}h {minutes}m"
+        
+        embed.set_footer(text=f"Poll ends in: {time_str} • Poll ID: {poll_id}")
+
+        await message.edit(embed=embed)
 
     @app_commands.command(name="endpoll", description="End a poll early")
     @app_commands.describe(message_id="The ID of the poll message")
-    async def end_poll(self, interaction, message_id: str):
-        # Check if user has permission
+    async def end_poll(self, interaction: discord.Interaction, message_id: str):
         if not interaction.user.guild_permissions.manage_messages:
             await interaction.response.send_message("You don't have permission to end polls!", ephemeral=True)
             return
 
-        # Find the poll
-        polls = load_data('polls')
         poll_id = None
-
-        for pid, poll in polls.items():
+        for pid, poll in self.poll_manager.polls.items():
             if str(poll["message_id"]) == message_id:
                 poll_id = pid
                 break
 
         if not poll_id:
-            await interaction.response.send_message("Poll not found! Make sure you entered the correct message ID.",
-                                                    ephemeral=True)
+            await interaction.response.send_message("Poll not found! Make sure you entered the correct message ID.", ephemeral=True)
             return
 
-        # Check if poll is already closed
-        if polls[poll_id].get("closed", False):
+        if self.poll_manager.polls[poll_id].get("closed", False):
             await interaction.response.send_message("This poll is already closed!", ephemeral=True)
             return
 
-        # Close the poll
-        polls[poll_id]["closed"] = True
-        polls[poll_id]["end_time"] = datetime.now().isoformat()
-        save_data('polls', polls)
-
-        # Send results
-        await self.send_poll_results(poll_id)
-
+        await self.end_poll(poll_id)
         await interaction.response.send_message("Poll ended successfully!", ephemeral=True)
 
+    @commands.Cog.listener()
+    async def on_ready(self):
+        print("Reaction Polls cog loaded and ready!")
 
 async def setup(bot):
     await bot.add_cog(Polls(bot))
