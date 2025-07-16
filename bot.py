@@ -6,7 +6,6 @@ import asyncio
 import logging
 from datetime import datetime
 import dotenv
-from keep_alive import keep_alive
 
 dotenv.load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
@@ -139,5 +138,4 @@ def is_admin(interaction):
 # Run the bot
 if __name__ == "__main__":
     bot = TicketBot()
-    keep_alive()
     bot.run(DISCORD_TOKEN)
