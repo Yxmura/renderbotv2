@@ -1,141 +1,128 @@
 import discord
 from discord.ext import commands
-import os
 import json
-import asyncio
+import os
 import logging
 from datetime import datetime
-import dotenv
-
-dotenv.load_dotenv()
-DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
+import asyncio
 
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("bot.log"),
-        logging.StreamHandler()
-    ]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("bot")
 
-# Bot configuration
-intents = discord.Intents.default()
-intents.members = True
-intents.message_content = True
+# Ensure data directory exists
+os.makedirs('data', exist_ok=True)
 
+# Load configuration
+def load_data(filename):
+    """Load data from JSON file"""
+    try:
+        with open(f'data/{filename}.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError:
+        return {}
 
-class TicketBot(commands.Bot):
-    def __init__(self):
-        super().__init__(
-            command_prefix='!',
-            intents=intents,
-            application_id=os.getenv('APPLICATION_ID')  # Optional: Set your application ID
-        )
-        self.initial_extensions = [
-            'cogs.tickets',
-            'cogs.fun',
-            'cogs.utility',
-            'cogs.admin',
-            'cogs.welcome',
-            'cogs.info',
-            'cogs.polls',
-            'cogs.reminders',
-            'cogs.giveaways',
-            'cogs.copyright_checker',
-            'cogs.help',
-            'cogs.rules',
-            'cogs.roles'
-        ]
-
-    async def setup_hook(self):
-        # Load extensions
-        for extension in self.initial_extensions:
-            try:
-                await self.load_extension(extension)
-                logger.info(f"Loaded extension {extension}")
-            except Exception as e:
-                logger.error(f"Failed to load extension {extension}: {e}")
-
-        # Ensure data directories exist
-        self.ensure_data_directories()
-
-    def ensure_data_directories(self):
-        # Create data directory if it doesn't exist
-        if not os.path.exists('data'):
-            os.makedirs('data')
-            logger.info("Created data directory")
-
-        # Create default data files if they don't exist
-        default_files = {
-            'tickets.json': {"tickets": {}, "counter": 0},
-            'config.json': {
-                "ticket_categories": ["General Support", "Technical Issue", "Billing Question", "Other"],
-                "admin_roles": [],
-                "welcome_channel": None,
-                "goodbye_channel": None,
-                "auto_roles": []
-            },
-            'reminders.json': [],
-            'polls.json': {},
-            'giveaways.json': {}  # Add default giveaways file
-        }
-
-        for filename, default_data in default_files.items():
-            filepath = f'data/{filename}'
-            if not os.path.exists(filepath):
-                with open(filepath, 'w') as f:
-                    json.dump(default_data, f, indent=4)
-                logger.info(f"Created default {filepath}")
-
-    async def on_ready(self):
-        logger.info(f'Logged in as {self.user.name} ({self.user.id})')
-        logger.info('------')
-
-        # Sync commands
-        try:
-            synced = await self.tree.sync()
-            logger.info(f"Synced {len(synced)} command(s)")
-        except Exception as e:
-            logger.error(f"Failed to sync commands: {e}")
-
-        # Setup activity
-        await self.change_presence(activity=discord.Activity(
-            type=discord.ActivityType.watching,
-            name="Renderdragon.org | /help"
-        ))
-
-
-# Helper functions for data management
-def load_data(file):
-    with open(f'data/{file}.json', 'r') as f:
-        return json.load(f)
-
-
-def save_data(file, data):
-    with open(f'data/{file}.json', 'w') as f:
+def save_data(filename, data):
+    """Save data to JSON file"""
+    with open(f'data/{filename}.json', 'w') as f:
         json.dump(data, f, indent=4)
 
+# Bot setup
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+intents.reactions = True
 
-# Check if user has admin role
-def is_admin(interaction):
-    config = load_data('config')
-    admin_roles = config.get("admin_roles", [])
+bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
-    if not admin_roles:  # If no admin roles set, default to administrator permission
-        return interaction.user.guild_permissions.administrator
+@bot.event
+async def on_ready():
+    """Called when the bot is ready"""
+    print(f'{bot.user} has connected to Discord!')
+    print(f'Bot is in {len(bot.guilds)} guilds')
+    
+    # Sync slash commands
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} slash commands")
+    except Exception as e:
+        print(f"Failed to sync commands: {e}")
 
-    for role_id in admin_roles:
-        role = interaction.guild.get_role(int(role_id))
-        if role and role in interaction.user.roles:
-            return True
+    # Load cogs
+    await load_cogs()
 
-    return interaction.user.guild_permissions.administrator
+async def load_cogs():
+    """Load all cogs from the cogs directory"""
+    cogs_dir = 'cogs'
+    if not os.path.exists(cogs_dir):
+        return
+    
+    for filename in os.listdir(cogs_dir):
+        if filename.endswith('.py') and not filename.startswith('__'):
+            cog_name = filename[:-3]
+            try:
+                await bot.load_extension(f'cogs.{cog_name}')
+                print(f"Loaded cog: {cog_name}")
+            except Exception as e:
+                print(f"Failed to load cog {cog_name}: {e}")
 
+@bot.command()
+@commands.is_owner()
+async def reload(ctx, cog_name: str):
+    """Reload a specific cog"""
+    try:
+        await bot.reload_extension(f'cogs.{cog_name}')
+        await ctx.send(f"✅ Reloaded cog: {cog_name}")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to reload cog: {e}")
+
+@bot.command()
+@commands.is_owner()
+async def load(ctx, cog_name: str):
+    """Load a cog"""
+    try:
+        await bot.load_extension(f'cogs.{cog_name}')
+        await ctx.send(f"✅ Loaded cog: {cog_name}")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to load cog: {e}")
+
+@bot.command()
+@commands.is_owner()
+async def unload(ctx, cog_name: str):
+    """Unload a cog"""
+    try:
+        await bot.unload_extension(f'cogs.{cog_name}')
+        await ctx.send(f"✅ Unloaded cog: {cog_name}")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to unload cog: {e}")
+
+@bot.command()
+@commands.is_owner()
+async def cogs(ctx):
+    """List all loaded cogs"""
+    loaded_cogs = list(bot.cogs.keys())
+    embed = discord.Embed(
+        title="Loaded Cogs",
+        description=f"**{len(loaded_cogs)} cogs loaded**",
+        color=discord.Color.blue()
+    )
+    
+    for cog_name in loaded_cogs:
+        embed.add_field(name=cog_name, value="✅ Active", inline=True)
+    
+    await ctx.send(embed=embed)
 
 # Run the bot
 if __name__ == "__main__":
-    bot = TicketBot()
-    bot.run(DISCORD_TOKEN)
+    config = load_data('config')
+    token = config.get('token')
+    
+    if not token:
+        print("Error: No token found in data/config.json")
+        print("Please add your bot token to data/config.json")
+    else:
+        bot.run(token)
