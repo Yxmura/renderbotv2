@@ -5,6 +5,10 @@ import os
 import logging
 from datetime import datetime
 import asyncio
+from dotenv import load_dotenv
+
+# Load environment variables from .env
+load_dotenv()
 
 # Set up logging
 logging.basicConfig(
@@ -118,11 +122,16 @@ async def cogs(ctx):
 
 # Run the bot
 if __name__ == "__main__":
-    config = load_data('config')
-    token = config.get('token')
+    # Try to get token from environment variable first
+    token = os.getenv('DISCORD_TOKEN')
+    
+    # Fallback to config.json if not found in .env
+    if not token:
+        config = load_data('config')
+        token = config.get('token')
     
     if not token:
-        print("Error: No token found in data/config.json")
-        print("Please add your bot token to data/config.json")
+        print("Error: No token found in .env (DISCORD_TOKEN) or data/config.json")
+        print("Please add your bot token to .env file as DISCORD_TOKEN=your_token_here")
     else:
         bot.run(token)

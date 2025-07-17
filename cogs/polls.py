@@ -1,6 +1,6 @@
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 import json
 import asyncio
 import re
@@ -254,6 +254,30 @@ class Polls(commands.Cog):
         for emoji in emojis[:len(options)]:
             await message.add_reaction(emoji)
 
+    @app_commands.command(name="endpoll", description="End a poll early")
+    @app_commands.describe(message_id="The ID of the poll message")
+    async def end_poll(self, interaction: discord.Interaction, message_id: str):
+        if not interaction.user.guild_permissions.manage_messages:
+            await interaction.response.send_message("You don't have permission to end polls!", ephemeral=True)
+            return
+
+        poll_id = None
+        for pid, poll in self.poll_manager.polls.items():
+            if str(poll["message_id"]) == message_id:
+                poll_id = pid
+                break
+
+        if not poll_id:
+            await interaction.response.send_message("Poll not found! Make sure you entered the correct message ID.", ephemeral=True)
+            return
+
+        if self.poll_manager.polls[poll_id].get("closed", False):
+            await interaction.response.send_message("This poll is already closed!", ephemeral=True)
+            return
+
+        await self.end_poll(poll_id)
+        await interaction.response.send_message("Poll ended successfully!", ephemeral=True)
+
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         if payload.user_id == self.bot.user.id:
@@ -327,30 +351,6 @@ class Polls(commands.Cog):
         embed.set_footer(text=f"Poll ends in: {time_str} • Poll ID: {poll_id}")
 
         await message.edit(embed=embed)
-
-    @app_commands.command(name="endpoll", description="End a poll early")
-    @app_commands.describe(message_id="The ID of the poll message")
-    async def end_poll(self, interaction: discord.Interaction, message_id: str):
-        if not interaction.user.guild_permissions.manage_messages:
-            await interaction.response.send_message("You don't have permission to end polls!", ephemeral=True)
-            return
-
-        poll_id = None
-        for pid, poll in self.poll_manager.polls.items():
-            if str(poll["message_id"]) == message_id:
-                poll_id = pid
-                break
-
-        if not poll_id:
-            await interaction.response.send_message("Poll not found! Make sure you entered the correct message ID.", ephemeral=True)
-            return
-
-        if self.poll_manager.polls[poll_id].get("closed", False):
-            await interaction.response.send_message("This poll is already closed!", ephemeral=True)
-            return
-
-        await self.end_poll(poll_id)
-        await interaction.response.send_message("Poll ended successfully!", ephemeral=True)
 
     @commands.Cog.listener()
     async def on_ready(self):

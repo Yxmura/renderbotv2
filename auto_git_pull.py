@@ -103,62 +103,23 @@ class GitAutoPuller:
                 check=True
             )
             
-            return "Your branch is behind" in result.stdout or "have diverged" in result.stdout
-        except subprocess.CalledProcessError:
-            return False
-
-    def stash_data_files(self):
-        """Stash data files before pulling"""
-        try:
-            # Create a stash for data files
-            stash_patterns = " ".join(f"'{pattern}'" for pattern in self.config["exclude_patterns"])
-            if stash_patterns.strip():
-                subprocess.run(
-                    ["git", "stash", "push", "-m", "Auto-stash data files before pull"],
-                    cwd=self.repo_path,
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
-            return True
-        except subprocess.CalledProcessError:
-            return False
-
-    def pop_stash(self):
-        """Restore stashed data files after pulling"""
-        try:
-            # Check if there are stashed changes
-            result = subprocess.run(
-                ["git", "stash", "list"],
-                cwd=self.repo_path,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            
-            if "Auto-stash data files before pull" in result.stdout:
-                subprocess.run(
-                    ["git", "stash", "pop"],
-                    cwd=self.repo_path,
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
-            return True
-        except subprocess.CalledProcessError:
+            return "Your branch is behind" in result.stdout
+        except:
             return False
 
     def pull_changes(self):
-        """Pull changes from remote, excluding data files"""
+        """Pull changes while preserving data files"""
         try:
-            current_branch = self.get_current_branch()
-            if not current_branch or current_branch not in self.config["branches"]:
-                logging.info(f"Skipping pull for branch: {current_branch}")
-                return False
-
-            # Use sparse checkout or .gitignore to exclude data files
-            # Method 1: Use git pull with .gitignore protection
-            result = subprocess.run(
+            # Stash data files to protect them
+            stash_result = subprocess.run(
+                ["git", "stash", "push", "-m", "Auto-stash before pull", "data/"],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True
+            )
+            
+            # Pull the latest changes
+            pull_result = subprocess.run(
                 ["git", "pull", "--no-rebase"],
                 cwd=self.repo_path,
                 capture_output=True,
@@ -166,17 +127,21 @@ class GitAutoPuller:
                 check=True
             )
             
-            logging.info(f"Git pull successful: {result.stdout}")
-            return True
+            # Restore stashed data files
+            subprocess.run(
+                ["git", "stash", "pop"],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True
+            )
             
+            return True, pull_result.stdout
         except subprocess.CalledProcessError as e:
-            logging.error(f"Git pull failed: {e.stderr}")
-            return False
+            return False, e.stderr
 
-    def check_and_pull(self):
-        """Main function to check for updates and pull if available"""
+    def run_once(self):
+        """Run a single git pull check"""
         if not self.config.get("enabled", True):
-            logging.info("Auto-pull is disabled")
             return False
 
         if not self.is_git_repo():
@@ -184,115 +149,24 @@ class GitAutoPuller:
             return False
 
         if not self.has_remote_changes():
-            logging.info("No remote changes to pull")
+            logging.info("No remote changes available")
             return False
 
-        logging.info("Remote changes detected, starting auto-pull...")
-        
-        # Stash data files
-        if self.stash_data_files():
-            logging.info("Data files stashed")
-        
-        # Pull changes
-        success = self.pull_changes()
-        
-        # Restore data files
-        if self.pop_stash():
-            logging.info("Data files restored")
+        success, output = self.pull_changes()
         
         if success:
-            logging.info("Auto-pull completed successfully")
-            if self.config.get("notify_on_update", True):
-                self.notify_update()
+            logging.info("Repository updated successfully")
+            return True
         
-        return success
-
-    def notify_update(self):
-        """Send notification when update is pulled"""
-        try:
-            # You can extend this to send Discord notifications
-            logging.info("Repository updated successfully!")
-        except Exception as e:
-            logging.error(f"Failed to send notification: {e}")
-
-    def run_once(self):
-        """Run a single check and pull if needed"""
-        return self.check_and_pull()
+        logging.error(f"Failed to pull changes: {output}")
+        return False
 
     async def run_periodically(self):
-        """Run the auto-pull check periodically"""
+        """Run periodic git pulls"""
         while True:
-            try:
-                self.check_and_pull()
-                interval = self.config.get("interval_minutes", 30)
-                await asyncio.sleep(interval * 60)
-            except Exception as e:
-                logging.error(f"Error in auto-pull loop: {e}")
-                await asyncio.sleep(300)  # Wait 5 minutes on error
-
-# Discord bot integration
-class GitPullCog(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-        self.puller = GitAutoPuller()
-        self.auto_pull_task = None
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        """Start auto-pull when bot is ready"""
-        if self.puller.config.get("enabled", True):
-            self.auto_pull_task = self.bot.loop.create_task(self.puller.run_periodically())
-            logging.info("Auto-pull task started")
-
-    def cog_unload(self):
-        """Cancel auto-pull task when cog is unloaded"""
-        if self.auto_pull_task:
-            self.auto_pull_task.cancel()
-
-    @app_commands.command(name="gitpull", description="Manually trigger git pull")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def manual_pull(self, interaction: discord.Interaction):
-        """Manually trigger a git pull"""
-        await interaction.response.defer()
-        
-        success = self.puller.run_once()
-        
-        if success:
-            await interaction.followup.send("✅ Repository updated successfully!")
-        else:
-            await interaction.followup.send("❌ No updates available or pull failed. Check logs for details.")
-
-    @app_commands.command(name="autopull", description="Configure auto-git-pull settings")
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(
-        enabled="Enable or disable auto-pull",
-        interval="Interval in minutes between checks",
-        notify="Send notifications when updates are pulled"
-    )
-    async def configure_autopull(
-        self, 
-        interaction: discord.Interaction,
-        enabled: bool = None,
-        interval: int = None,
-        notify: bool = None
-    ):
-        """Configure auto-pull settings"""
-        if enabled is not None:
-            self.puller.config["enabled"] = enabled
-        if interval is not None:
-            self.puller.config["interval_minutes"] = max(5, interval)
-        if notify is not None:
-            self.puller.config["notify_on_update"] = notify
-            
-        self.puller.save_config()
-        
-        status = "enabled" if self.puller.config["enabled"] else "disabled"
-        await interaction.response.send_message(
-            f"Auto-pull settings updated:\n"
-            f"Status: {status}\n"
-            f"Interval: {self.puller.config['interval_minutes']} minutes\n"
-            f"Notifications: {'on' if self.puller.config['notify_on_update'] else 'off'}"
-        )
+            if self.config.get("enabled", True):
+                self.run_once()
+            await asyncio.sleep(self.config.get("interval_minutes", 30) * 60)
 
 # Standalone script usage
 if __name__ == "__main__":
@@ -305,5 +179,7 @@ if __name__ == "__main__":
             puller.run_once()
         elif sys.argv[1] == "config":
             print(json.dumps(puller.config, indent=2))
+        else:
+            print("Usage: python auto_git_pull.py [once|config]")
     else:
         print("Usage: python auto_git_pull.py [once|config]")
