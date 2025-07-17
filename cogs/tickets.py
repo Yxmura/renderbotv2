@@ -11,7 +11,6 @@ from datetime import datetime, timedelta
 import logging
 import os
 from typing import Dict, Optional, Any, List
-from dataclasses import dataclass, asdict, field
 import uuid
 from bot import load_data, save_data
 
@@ -25,13 +24,13 @@ class TicketManager:
 
     def load_data(self):
         try:
-            with open(self.data_file, 'r') as f:
+            with open(self.data_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             return {"tickets": {}, "reaction_roles": {}, "blacklist": []}
 
     def save_data(self):
-        with open(self.data_file, 'w') as f:
+        with open(self.data_file, 'w', encoding='utf-8') as f:
             json.dump(self.data, f, indent=2)
 
     def create_ticket(self, ticket_data: dict) -> str:
@@ -609,43 +608,17 @@ class Tickets(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.ticket_manager = TicketManager()
-        self.auto_close_task.start()
+        try:
+            self.auto_close_task.start()
+        except Exception as e:
+            logger.error(f"Failed to start auto-close task: {e}")
+            traceback.print_exc()
 
     def cog_unload(self):
-        self.auto_close_task.cancel()
-
-    @tasks.loop(hours=1)
-    async def auto_close_task(self):
-        """Auto-close tickets inactive for 24 hours"""
-        await self.bot.wait_until_ready()
-        
-        for ticket in self.ticket_manager.data['tickets'].values():
-            if ticket['status'] != 'open':
-                continue
-                
-            channel = self.bot.get_channel(ticket['channel_id'])
-            if not channel:
-                continue
-                
-            try:
-                last_message = None
-                async for msg in channel.history(limit=1):
-                    last_message = msg
-                    break
-                
-                if last_message and last_message.author.id == ticket['user_id']:
-                    time_diff = datetime.now() - last_message.created_at
-                    if time_diff > timedelta(hours=24):
-                        await channel.delete(reason="Auto-closed due to 24h user inactivity")
-                        self.ticket_manager.update_ticket(ticket['ticket_id'], {
-                            'status': 'closed',
-                            'closed_at': datetime.now().isoformat(),
-                            'closed_by': None,
-                            'close_reason': 'Auto-closed: 24h user inactivity'
-                        })
-                        
-            except Exception as e:
-                logger.error(f"Error in auto-close for ticket {ticket['ticket_id']}: {e}")
+        try:
+            self.auto_close_task.cancel()
+        except:
+            pass
 
     @app_commands.command(name="ticketpanel", description="Create a ticket creation panel")
     @app_commands.checks.has_permissions(manage_channels=True)
@@ -695,9 +668,68 @@ class Tickets(commands.Cog):
         
         await interaction.response.send_message(embed=embed)
 
+    @tasks.loop(minutes=30)
+    async def auto_close_task(self):
+        """Auto-close tickets with 24h user inactivity"""
+        await self.bot.wait_until_ready()
+        
+        # Create a copy to avoid modification during iteration
+        tickets = list(self.ticket_manager.data['tickets'].values())
+        for ticket in tickets:
+            if ticket['status'] != 'open':
+                continue
+                
+            channel = self.bot.get_channel(ticket['channel_id'])
+            if not channel:
+                continue
+                
+            try:
+                # Get last user message
+                last_user_msg = None
+                async for msg in channel.history(limit=100):
+                    if msg.author.id == ticket['user_id'] and not msg.author.bot:
+                        last_user_msg = msg
+                        break
+                
+                # Auto-close if no user activity for 24h
+                if last_user_msg:
+                    time_diff = datetime.now() - last_user_msg.created_at
+                    if time_diff > timedelta(hours=24):
+                        try:
+                            await channel.delete(reason="Auto-closed due to 24h user inactivity")
+                        except discord.NotFound:
+                            pass  # Channel already deleted
+                        self.ticket_manager.update_ticket(ticket['ticket_id'], {
+                            'status': 'closed',
+                            'closed_at': datetime.now().isoformat(),
+                            'closed_by': None,
+                            'close_reason': 'Auto-closed: 24h user inactivity'
+                        })
+                else:
+                    # No user messages at all, close immediately
+                    try:
+                        await channel.delete(reason="Auto-closed: no user messages")
+                    except discord.NotFound:
+                        pass  # Channel already deleted
+                    self.ticket_manager.update_ticket(ticket['ticket_id'], {
+                        'status': 'closed',
+                        'closed_at': datetime.now().isoformat(),
+                        'closed_by': None,
+                        'close_reason': 'Auto-closed: no user messages'
+                    })
+                    
+            except Exception as e:
+                logger.error(f"Error processing ticket {ticket['ticket_id']}: {e}")
+                traceback.print_exc()
+
     @commands.Cog.listener()
     async def on_ready(self):
-        print("Tickets cog loaded and ready!")
+        logger.info("Tickets cog loaded and ready!")
 
 async def setup(bot):
-    await bot.add_cog(Tickets(bot))
+    try:
+        await bot.add_cog(Tickets(bot))
+        logger.info("Tickets cog loaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to load Tickets cog: {e}")
+        traceback.print_exc()

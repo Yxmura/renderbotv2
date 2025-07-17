@@ -49,15 +49,19 @@ async def on_ready():
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is in {len(bot.guilds)} guilds')
     
-    # Sync slash commands
+    # Load cogs first so commands are registered
+    await load_cogs()
+
+    # Sync slash commands after cogs are loaded
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} slash commands")
+        print("Command names:", [cmd.name for cmd in synced])
     except Exception as e:
         print(f"Failed to sync commands: {e}")
-
-    # Load cogs
-    await load_cogs()
+        print("Make sure all cogs are loaded correctly")
+        import traceback
+        traceback.print_exc()
 
 async def load_cogs():
     """Load all cogs from the cogs directory"""
@@ -106,9 +110,24 @@ async def unload(ctx, cog_name: str):
 
 @bot.command()
 @commands.is_owner()
+async def sync(ctx):
+    """Manually sync slash commands"""
+    try:
+        synced = await ctx.bot.tree.sync()
+        await ctx.send(f"✅ Synced {len(synced)} slash commands\nCommand names: {', '.join([cmd.name for cmd in synced])}")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to sync commands: {e}")
+        import traceback
+        await ctx.send(f"```{traceback.format_exc()}```")
+
+@bot.command()
+@commands.is_owner()
 async def cogs(ctx):
     """List all loaded cogs"""
     loaded_cogs = list(bot.cogs.keys())
+    if not loaded_cogs:
+        return await ctx.send("No cogs loaded")
+    
     embed = discord.Embed(
         title="Loaded Cogs",
         description=f"**{len(loaded_cogs)} cogs loaded**",
@@ -116,7 +135,13 @@ async def cogs(ctx):
     )
     
     for cog_name in loaded_cogs:
-        embed.add_field(name=cog_name, value="✅ Active", inline=True)
+        cog = bot.get_cog(cog_name)
+        commands_list = [cmd.name for cmd in cog.get_commands()]
+        embed.add_field(
+            name=cog_name,
+            value=f"Commands: {', '.join(commands_list) if commands_list else 'None'}",
+            inline=False
+        )
     
     await ctx.send(embed=embed)
 
