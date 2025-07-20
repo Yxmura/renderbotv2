@@ -1,16 +1,17 @@
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+import traceback
 import json
-import asyncio
-from typing import Optional, Dict, Any
+#import asyncio # Never used
+from typing import Optional, Dict, Any 
 import io
-import re
-import textwrap
+#import re # Never used
+#import textwrap # Never used
 from datetime import datetime, timedelta
 import logging
 import os
-from typing import Dict, Optional, Any, List
+#from typing import Dict, Optional, Any, List # Duplicate
 import uuid
 from bot import load_data, save_data
 
@@ -20,18 +21,27 @@ os.makedirs('data', exist_ok=True)
 class TicketManager:
     def __init__(self):
         self.data_file = 'data/tickets.json'
-        self.data = self.load_data()
+        #self.data = self.load_data()
+        self.lock = asyncio.Lock()
+        #self.data = asyncio.run(load_data())
+        self.data = None
 
-    def load_data(self):
-        try:
-            with open(self.data_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {"tickets": {}, "reaction_roles": {}, "blacklist": []}
+    async def ensure_loaded(self):
+        if self.data is None:
+            self.data = await self.load_data()
 
-    def save_data(self):
-        with open(self.data_file, 'w', encoding='utf-8') as f:
-            json.dump(self.data, f, indent=2)
+    async def load_data(self):
+        async with self.lock:
+            try:
+                with open(self.data_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                return {"tickets": {}, "reaction_roles": {}, "blacklist": []}
+
+    async def save_data(self):
+        async with self.lock:
+            with open(self.data_file, 'w', encoding='utf-8') as f:
+                json.dump(self.data, f, indent=2)
 
     def create_ticket(self, ticket_data: dict) -> str:
         ticket_id = str(uuid.uuid4())[:8]
@@ -55,7 +65,7 @@ class TicketManager:
             del self.data['tickets'][ticket_id]
             self.save_data()
 
-    def get_user_tickets(self, user_id: int) -> List[dict]:
+    def get_user_tickets(self, user_id: int) -> list[dict]:
         return [ticket for ticket in self.data['tickets'].values() 
                 if ticket.get('user_id') == user_id]
 
@@ -302,10 +312,12 @@ class CloseTicketModal(discord.ui.Modal):
         
         return header + "\n".join(messages)
 
+ 
+
 class TicketCategorySelect(discord.ui.View):
-    def __init__(self):
+    def __init__(self, ticket_manager: TicketManager):
         super().__init__(timeout=None)
-        self.ticket_manager = TicketManager()
+        self.ticket_manager = ticket_manager
 
     @discord.ui.select(
         placeholder="Select a ticket category...",
@@ -419,7 +431,7 @@ class TicketCategorySelect(discord.ui.View):
             embed.add_field(name="Category", value=modal.category, inline=True)
             embed.add_field(name="Priority", value="🟡 Normal", inline=True)
             
-            view = TicketControlView(ticket_id)
+            view = TicketControlView(ticket_id, self.ticket_manager)
             message = await channel.send(
                 content=f"{interaction.user.mention} " + (f"<@&{support_role_id}>" if support_role_id else ""),
                 embed=embed,
@@ -439,10 +451,10 @@ class TicketCategorySelect(discord.ui.View):
             return None
 
 class TicketControlView(discord.ui.View):
-    def __init__(self, ticket_id: str):
+    def __init__(self, ticket_id: str, ticket_manager: TicketManager):
         super().__init__(timeout=None)
         self.ticket_id = ticket_id
-        self.ticket_manager = TicketManager()
+        self.ticket_manager = ticket_manager
         
     @discord.ui.button(label="Claim", style=discord.ButtonStyle.blurple, emoji="👋", row=0)
     async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -637,7 +649,7 @@ class Tickets(commands.Cog):
             inline=False
         )
         
-        view = TicketCategorySelect()
+        view = TicketCategorySelect(self.ticket_manager)
         await interaction.response.send_message(embed=embed, view=view)
 
     @app_commands.command(name="tickets", description="View ticket statistics")
